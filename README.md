@@ -37,9 +37,6 @@ void loop() {
 
 ## Blink com Monitor de Memória e Stack
 ```bash
-#ifndef APP_BLINK_H
-#define APP_BLINK_H
-
 #include <Arduino.h>
 
 // Função simples para piscar um pino
@@ -50,13 +47,6 @@ inline void blink(uint8_t pin, uint32_t timeMs) {
   digitalWrite(pin, LOW);
   delay(timeMs);
 }
-
-#endif // APP_BLINK_H
-```
-# CPP
-```bash
-#include <Arduino.h>
-#include "app_blink.h"
 
 // --- Monitor de memória ---
 void printMemoryInfo() {
@@ -82,9 +72,10 @@ void setup() {
 }
 
 void loop() {
-  blink(LED_BUILTIN, 500); // pisca com 500 ms HIGH e 500 ms LOW
+  blink(2, 500); // pisca com 500 ms HIGH e 500 ms LOW
   printMemoryInfo();       // imprime após cada ciclo
 }
+
 
 
 ```
