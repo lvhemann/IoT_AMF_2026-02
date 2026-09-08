@@ -5,9 +5,7 @@
 
 Nesta atividade você vai construir, do zero, um sistema em que um **ESP32 lê um sensor
 físico, envia a leitura para um banco de dados na nuvem e economiza energia dormindo
-entre os envios** — como faria um sensor de verdade alimentado por bateria. Você vai
-desenvolver por etapas, **versionando cada passo no GitHub** (commits), e no final
-**entregar a atividade pronta e funcionando**.
+entre os envios** — como faria um sensor de verdade alimentado por bateria.
 
 Leia este documento inteiro antes de começar: ele é a explicação **e** o enunciado.
 
@@ -127,10 +125,8 @@ ex.: `/insert`, e às vezes **parâmetros**, ex.: `?sensor=temp`) e, às vezes, 
 
 ## 4. A atividade — desenvolva por etapas
 
-Faça **uma etapa de cada vez** e dê um **commit** ao final de cada uma (veja a seção 8).
-Parte da avaliação é ver a atividade **evoluindo** no histórico do GitHub, não pronta de uma vez.
 
-- [ ] **Etapa 0 — Preparação.** Crie uma conta no [Cloudflare](https://dash.cloudflare.com/sign-up) e faça o **fork** deste repositório.
+- [ ] **Etapa 0 — Preparação.** Crie uma conta no [Cloudflare](https://dash.cloudflare.com/sign-up).
 - [ ] **Etapa 1 — Criar o Worker e o KV.** No painel: **Workers & Pages → Create → Worker**, dê um nome e faça *Deploy*. Crie o banco em **Storage & Databases → KV → Create namespace** e ligue-o ao Worker em **Settings → Bindings** com o nome **`KV_SENSOR`**. Anote sua URL.
 - [ ] **Etapa 2 — Implementar `/insert` e `/get`.** Cole no editor do Worker o código da seção 5 (primeiro bloco) e faça *Deploy*.
 - [ ] **Etapa 3 — Testar pelo PowerShell.** Grave e leia um valor com os comandos da seção 6. Tire um print.
@@ -386,26 +382,7 @@ void loop() {
 
 ---
 
-## 8. Como entregar (Git + Pull Request)
-
-Você entrega **fazendo commits** ao longo do trabalho. Depois de fazer o fork e clonar o seu
-repositório, ao final de cada etapa rode:
-
-```bash
-git add .
-git commit -m "Etapa 6: nó sensor com deep sleep"
-git push
-```
-
-Ao terminar a **Etapa 9**: preencha o `ENTREGA.md` (respostas + prints do Serial Monitor e do
-PowerShell), faça o último commit e abra um **Pull Request** (na página do seu fork:
-**Contribute → Open pull request**) com o **seu nome** no título.
-
-**Prazo:** a combinar com o professor.
-
----
-
-## 9. Perguntas para responder no `ENTREGA.md`
+## 8. Perguntas para responder no `ENTREGA.md`
 
 1. Com suas palavras, o que é o **Cloudflare Workers** e o que é o **KV**?
 2. Explique o caminho de um dado desde o **sensor físico** até ficar salvo no KV.
@@ -413,7 +390,4 @@ PowerShell), faça o último commit e abra um **Pull Request** (na página do se
 4. Por que a variável de contagem usa `RTC_DATA_ATTR`? O que aconteceria sem isso?
 5. Por que o **nó sensor** dorme, mas o **nó atuador** fica ligado?
 6. Por que o ESP32 precisa conectar no **Wi-Fi antes** de enviar a leitura?
-7. Qual a diferença entre a chave `sensor:temp:last` e as chaves `sensor:temp:<timestamp>`?
-8. Por que a **senha do Wi-Fi** não pode ser enviada ao GitHub?
 
-Bom trabalho! 🚀
