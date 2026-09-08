@@ -46,7 +46,7 @@ alimentada por um sensor real que dorme entre as medições.
 
 ## 3. Como funciona
 
-Nada aqui é "mágica" — são leituras de sensor, uma conexão Wi-Fi e mensagens HTTP indo e voltando.
+são leituras de sensor, uma conexão Wi-Fi e mensagens HTTP indo e voltando.
 
 ### 3.1 A conexão Wi-Fi
 
