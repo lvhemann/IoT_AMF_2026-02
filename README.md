@@ -1,7 +1,7 @@
 Atividade IoT — Sensor físico na nuvem com KV + Cloudflare Workers
 Disciplina: Internet das Coisas (IoT) · Turma AMF 2026-02 Plataforma: ESP32 (Arduino/PlatformIO) + Cloudflare Workers + Cloudflare KV
 
-Nesta atividade você vai construir, do zero, um sistema em que um ESP32 lê um sensor físico, envia a leitura para um banco de dados na nuvem e economiza energia dormindo entre os envios — como faria um sensor de verdade alimentado por bateria. Você vai desenvolver por etapas, versionando cada passo no GitHub (commits), e no final entregar a atividade pronta e funcionando.
+Nesta atividade você vai construir, do zero, um sistema em que um ESP32 lê um sensor físico, envia a leitura para um banco de dados na nuvem e economiza energia dormindo entre os envios — como faria um sensor de verdade alimentado por bateria. 
 
 Leia este documento inteiro antes de começar: ele é a explicação e o enunciado.
 
