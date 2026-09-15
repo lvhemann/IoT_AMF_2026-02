@@ -1,16 +1,16 @@
-# Atividade IoT — Banco de dados SQL na nuvem com Cloudflare D1
+# Atividade IoT — Estação de sensores na nuvem com Cloudflare D1
 
 **Disciplina:** Internet das Coisas (IoT) · Turma AMF 2026-02
 **Plataforma:** ESP32 (Arduino/PlatformIO) + Cloudflare Workers + Cloudflare D1
 
-> **Continuação da atividade do KV.** Antes, você guardou os dados num banco
-> **chave-valor** (KV). Agora vamos usar um **banco SQL de verdade** (o D1) e responder
-> perguntas que no KV eram difíceis: *qual a temperatura média?*, *quantas leituras passaram
-> de 30°C?*, *qual a máxima do dia?*. E o melhor: **o ESP32 quase não muda.**
+> **Continuação da atividade do KV.** Antes você guardou os dados num banco **chave-valor** (KV).
+> Agora vamos usar um **banco SQL de verdade** (o D1) e montar uma **estação de sensores
+> funcional**: o ESP32 lê **temperatura e umidade** (DHT11), envia as duas para a nuvem, e ainda
+> registra um **log de cada conexão** (IP, sinal, tempo para conectar, internet). No fim você
+> consulta tudo com SQL — inclusive médias e resumos que o KV não fazia fácil.
 
-Este documento tem duas partes. A **Parte 1 — Entenda** explica os conceitos (leia com
-calma, é o conteúdo da aula). A **Parte 2 — Construa** é o passo a passo para você montar.
-Leia a Parte 1 antes de pôr a mão na massa.
+Este documento tem duas partes. A **Parte 1 — Entenda** explica os conceitos (é o conteúdo da
+aula). A **Parte 2 — Construa** é o passo a passo. Leia a Parte 1 antes de pôr a mão na massa.
 
 **Sumário**
 - [Parte 1 — Entenda](#parte-1--entenda)
@@ -18,12 +18,12 @@ Leia a Parte 1 antes de pôr a mão na massa.
   - [2. O que é um banco de dados relacional](#2-o-que-é-um-banco-de-dados-relacional)
   - [3. KV × D1 (a comparação)](#3-kv--d1-a-comparação)
   - [4. O que é o Cloudflare D1](#4-o-que-é-o-cloudflare-d1)
-  - [5. Tabelas: linhas, colunas, tipos e chave primária](#5-tabelas-linhas-colunas-tipos-e-chave-primária)
+  - [5. As tabelas do projeto](#5-as-tabelas-do-projeto)
   - [6. SQL: a linguagem para conversar com o banco](#6-sql-a-linguagem-para-conversar-com-o-banco)
   - [7. Funções de resumo (agregação)](#7-funções-de-resumo-agregação)
   - [8. GROUP BY: resumo por grupo](#8-group-by-resumo-por-grupo)
-  - [9. Como o Worker conversa com o D1 (e segurança)](#9-como-o-worker-conversa-com-o-d1-e-segurança)
-  - [10. A grande sacada: o ESP32 não muda](#10-a-grande-sacada-o-esp32-não-muda)
+  - [9. O log de conexão (diagnóstico do dispositivo)](#9-o-log-de-conexão-diagnóstico-do-dispositivo)
+  - [10. Como o Worker conversa com o D1 (e segurança)](#10-como-o-worker-conversa-com-o-d1-e-segurança)
 - [Parte 2 — Construa (passo a passo)](#parte-2--construa-passo-a-passo)
 - [Código de referência](#código-de-referência)
 - [Entrega e perguntas](#entrega)
@@ -36,22 +36,17 @@ Leia a Parte 1 antes de pôr a mão na massa.
 
 Na atividade anterior, o KV guardava os dados como **chave → valor** (ex.: `sensor:123 → { "temp": 26.4 }`).
 É um banco **chave-valor distribuído globalmente**, ótimo para "pegar o último valor". Mas ele
-tem uma **limitação**: **não faz consultas complexas** (`SELECT`, `WHERE`, etc.). Se você
-quisesse a **temperatura média da última hora**, teria que **listar tudo** e calcular na mão,
-dentro do código.
+tem uma **limitação**: **não faz consultas complexas** (`SELECT`, `WHERE`, etc.). Para a
+**temperatura média da última hora**, você teria que **listar tudo** e calcular na mão, no código.
 
 Bancos **relacionais** foram feitos exatamente para isso: **guardar muitos registros e responder
-perguntas sobre eles** com facilidade. É o que vamos usar agora.
+perguntas sobre eles** com facilidade.
 
 ## 2. O que é um banco de dados relacional
 
-Um banco **relacional** organiza os dados em **tabelas** — como uma planilha, com **linhas**
-e **colunas**. Cada linha é um registro (uma leitura do sensor), e cada coluna é um campo
-daquele registro (qual sensor, qual valor, quando foi medido).
-
-A grande vantagem é que você conversa com o banco usando **SQL**, uma linguagem em que você
-**descreve o que quer** ("a média da temperatura", "as 10 últimas leituras", "quantas passaram
-de 30") e o banco faz o trabalho pesado de buscar e calcular.
+Um banco **relacional** organiza os dados em **tabelas** — como uma planilha, com **linhas** e
+**colunas**. Cada linha é um registro; cada coluna é um campo. Você conversa com o banco usando
+**SQL**, uma linguagem em que você **descreve o que quer** e o banco busca e calcula.
 
 ## 3. KV × D1 (a comparação)
 
@@ -60,8 +55,7 @@ de 30") e o banco faz o trabalho pesado de buscar e calcular.
 | **KV** | Chave-valor | Últimos estados, cache, configs | ~25 MB por valor; **consistência eventual** |
 | **D1** | **SQL** (SQLite) | Histórico, relatórios, consultas complexas | **SQL completo**; dados consistentes |
 
-Em uma frase: **KV para estado simples; D1 para histórico e análise.** No D1 você pode escrever,
-por exemplo:
+Em uma frase: **KV para estado simples; D1 para histórico e análise.** No D1 você pode escrever:
 
 ```sql
 SELECT * FROM leituras WHERE valor > 25 ORDER BY timestamp DESC;
@@ -69,115 +63,82 @@ SELECT * FROM leituras WHERE valor > 25 ORDER BY timestamp DESC;
 
 ## 4. O que é o Cloudflare D1
 
-O **D1** é o banco de dados **SQL serverless** da Cloudflare, baseado no **SQLite** (um banco
-relacional leve e muito usado). "Serverless" quer dizer o mesmo que no Worker: **você não
-administra servidor nenhum** — cria o banco pelo painel e pronto.
-
-Quem acessa o D1 é o seu **Worker**. Eles se conectam por um **binding** (uma "ligação")
-chamado, nesta atividade, **`DB`**. No código do Worker, o banco aparece como `env.DB`.
+O **D1** é o banco de dados **SQL serverless** da Cloudflare, baseado no **SQLite**. "Serverless"
+quer dizer que **você não administra servidor nenhum** — cria o banco pelo painel e pronto. Quem
+acessa o D1 é o seu **Worker**, através de um **binding** (uma "ligação") chamado aqui **`DB`**.
+No código, o banco aparece como `env.DB`.
 
 ```
-ESP32  ──POST /insert──▶  Worker  ──SQL via env.DB──▶  D1 (tabela "leituras")
+ESP32  ──POST /insert e /log──▶  Worker  ──SQL via env.DB──▶  D1 (tabelas "leituras" e "conexoes")
 ```
 
-## 5. Tabelas: linhas, colunas, tipos e chave primária
+## 5. As tabelas do projeto
 
-Antes de guardar qualquer dado, você precisa **criar a tabela** — definir quais colunas ela terá
-e o **tipo** de cada uma. A nossa tabela se chama `leituras`:
+Nossa estação usa **duas tabelas**. A primeira guarda as **medições** dos sensores:
 
 ```sql
 CREATE TABLE IF NOT EXISTS leituras (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,  -- numero unico de cada linha
   sensor    TEXT    NOT NULL,                   -- "temp" ou "umid"
   valor     REAL    NOT NULL,                   -- o numero medido
-  timestamp INTEGER NOT NULL                    -- quando foi medido (em ms)
+  timestamp INTEGER NOT NULL                    -- quando foi medido (ms)
 );
 ```
 
-Entendendo cada parte:
+A segunda guarda os **logs de conexão** do dispositivo (veja a seção 9):
 
-- **Coluna** — um campo do registro: `id`, `sensor`, `valor`, `timestamp`.
-- **Tipo** — o que a coluna guarda. `INTEGER` (inteiro), `REAL` (número com vírgula, ex.: 27.8), `TEXT` (texto).
-- **`PRIMARY KEY AUTOINCREMENT`** — a **chave primária**: identificador **único** de cada linha. Com `AUTOINCREMENT`, o próprio banco numera as linhas (1, 2, 3…).
-- **`NOT NULL`** — a coluna **não pode ficar vazia**.
+```sql
+CREATE TABLE IF NOT EXISTS conexoes (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ip        TEXT,               -- IP que o ESP32 recebeu na rede
+  rssi      INTEGER,            -- forca do sinal Wi-Fi (dBm)
+  tempo_ms  INTEGER,            -- tempo que levou para conectar (ms)
+  internet  INTEGER,            -- 1 = internet respondeu, 0 = nao
+  timestamp INTEGER NOT NULL
+);
+```
 
-Depois de gravar algumas leituras, a tabela fica assim:
+Entendendo a estrutura de uma tabela (vale para as duas):
 
-| id | sensor | valor | timestamp     |
-|----|--------|-------|---------------|
-| 1  | temp   | 27.8  | 1699999990000 |
-| 2  | umid   | 61.0  | 1699999990000 |
-| 3  | temp   | 28.1  | 1700000020000 |
+- **Coluna** — um campo do registro. **Tipo** — o que ela guarda: `INTEGER` (inteiro),
+  `REAL` (com vírgula, ex.: 27.8), `TEXT` (texto).
+- **`PRIMARY KEY AUTOINCREMENT`** — a **chave primária**: identificador **único** de cada linha,
+  numerado pelo próprio banco (1, 2, 3…).
+- **`NOT NULL`** — a coluna não pode ficar vazia.
 
 ## 6. SQL: a linguagem para conversar com o banco
 
-**SQL** (Structured Query Language) é a linguagem dos bancos relacionais. Você vai usar poucos
-comandos, e cada um faz uma coisa:
+Você vai usar poucos comandos, cada um com um papel:
 
-- **`CREATE TABLE`** — cria a estrutura da tabela (você faz isso **uma vez**).
-- **`INSERT INTO`** — adiciona **uma linha** (uma leitura).
+- **`CREATE TABLE`** — cria a estrutura (uma vez).
+- **`INSERT INTO`** — adiciona uma linha:
   ```sql
   INSERT INTO leituras (sensor, valor, timestamp) VALUES ('temp', 27.8, 1699999990000);
   ```
-- **`SELECT ... FROM`** — **lê** dados.
+- **`SELECT ... FROM`** — lê dados. **`WHERE`** filtra; **`ORDER BY`** ordena; **`LIMIT`** limita:
   ```sql
-  SELECT valor, timestamp FROM leituras;
-  ```
-- **`WHERE`** — **filtra** as linhas.
-  ```sql
-  SELECT valor FROM leituras WHERE sensor = 'temp';
-  SELECT valor FROM leituras WHERE valor > 30;
-  ```
-- **`ORDER BY`** — **ordena** (`ASC` crescente, `DESC` decrescente).
-  ```sql
-  SELECT valor, timestamp FROM leituras ORDER BY timestamp DESC;   -- mais novas primeiro
-  ```
-- **`LIMIT`** — **limita** a quantidade de linhas.
-  ```sql
-  SELECT valor FROM leituras ORDER BY timestamp DESC LIMIT 1;      -- só a mais nova (o "último valor")
+  SELECT valor, timestamp FROM leituras
+  WHERE sensor = 'temp' ORDER BY timestamp DESC LIMIT 1;   -- o "ultimo valor"
   ```
 
-Repare que **"ler o último valor"** (o que o `/get` fazia no KV) vira, no SQL, um
-`ORDER BY timestamp DESC LIMIT 1`.
+Repare: **"ler o último valor"** (o que o `/get` fazia no KV) vira `ORDER BY timestamp DESC LIMIT 1`.
 
 ## 7. Funções de resumo (agregação)
 
-Aqui está o que o KV não fazia fácil. As **funções de agregação** olham para **várias linhas**
-e devolvem **um número que as resume**:
-
-- **`COUNT(*)`** — conta quantas linhas.
-- **`AVG(valor)`** — média dos valores.
-- **`MIN(valor)`** / **`MAX(valor)`** — o menor / o maior valor.
-- **`SUM(valor)`** — a soma.
+As **funções de agregação** olham várias linhas e devolvem **um número que as resume**:
+`COUNT(*)` (quantas), `AVG(valor)` (média), `MIN`/`MAX` (menor/maior), `SUM` (soma).
 
 ```sql
--- Quantas leituras de temperatura existem?
-SELECT COUNT(*) FROM leituras WHERE sensor = 'temp';
-
--- Média, mínima e máxima da temperatura:
 SELECT AVG(valor), MIN(valor), MAX(valor) FROM leituras WHERE sensor = 'temp';
-
--- Quantas leituras de temperatura passaram de 30?
-SELECT COUNT(*) FROM leituras WHERE sensor = 'temp' AND valor > 30;
+SELECT COUNT(*) FROM leituras WHERE sensor = 'temp' AND valor > 30;   -- quantas passaram de 30
 ```
 
-Cada uma dessas perguntas, no KV, exigiria baixar tudo e calcular no código. No SQL, é **uma linha**.
+No KV, isso exigia baixar tudo e calcular no código. No SQL, é **uma linha**.
 
 ## 8. GROUP BY: resumo por grupo
 
-E se você quiser a média **de cada sensor** (temperatura e umidade) de uma vez? O **`GROUP BY`**
-separa as linhas em grupos e aplica a agregação **dentro de cada grupo**.
-
-Suponha a tabela:
-
-| sensor | valor |
-|--------|-------|
-| temp   | 27.8  |
-| temp   | 28.1  |
-| umid   | 61.0  |
-| umid   | 59.0  |
-
-A consulta:
+O **`GROUP BY`** separa as linhas em grupos e aplica a agregação **dentro de cada grupo**.
+Como enviamos **dois sensores** (`temp` e `umid`), podemos resumir os dois de uma vez:
 
 ```sql
 SELECT sensor, AVG(valor) AS media, MAX(valor) AS maximo
@@ -185,132 +146,113 @@ FROM leituras
 GROUP BY sensor;
 ```
 
-Devolve **uma linha por sensor**:
-
 | sensor | media | maximo |
 |--------|-------|--------|
 | temp   | 27.95 | 28.1   |
 | umid   | 60.0  | 61.0   |
 
-É por isso que, nesta atividade, o DHT11 envia **dois sensores** (`temp` e `umid`): para o
-`GROUP BY` ter o que agrupar.
+O banco **agrupou** por `sensor` e calculou a média e o máximo em cada grupo.
 
-## 9. Como o Worker conversa com o D1 (e segurança)
+## 9. O log de conexão (diagnóstico do dispositivo)
 
-No Worker, você **prepara** o comando SQL, **liga** os valores e **executa**:
+Numa estação de verdade, não basta guardar as medições — você também quer saber **se o dispositivo
+está saudável**: ele conectou? com qual **IP**? a **internet** respondeu? **quanto tempo** levou
+para conectar? qual a **força do sinal**? Esses dados formam um **log de conexão**, e ajudam muito
+a diagnosticar problemas no campo (ex.: um sensor que demora demais para conectar pode estar longe
+do roteador).
+
+A cada ciclo, o ESP32 mede e envia (por `POST /log`):
+
+- **IP** — o endereço que o roteador deu ao ESP32 (ex.: `192.168.0.42`). Ele vem de `WiFi.localIP()`.
+- **RSSI** — a força do sinal Wi-Fi, em dBm (quanto mais perto de 0, melhor; ex.: -55 é bom, -85 é fraco). Vem de `WiFi.RSSI()`.
+- **tempo_ms** — quanto tempo levou para conectar. Medimos com `millis()` **antes** e **depois** de conectar e subtraímos.
+- **internet** — se a nuvem respondeu (1) ou não (0). Conectar ao **roteador** não garante **internet**; sabemos que há internet porque o `POST` para o Worker recebeu uma resposta HTTP.
+
+Tudo isso vai para a tabela `conexoes` e pode ser listado por `GET /logs`.
+
+## 10. Como o Worker conversa com o D1 (e segurança)
+
+No Worker, você **prepara** o SQL, **liga** os valores e **executa**:
 
 ```javascript
 await env.DB
   .prepare("INSERT INTO leituras (sensor, valor, timestamp) VALUES (?, ?, ?)")
   .bind(sensor, valor, Date.now())   // preenche os "?" na ordem
-  .run();                            // executa
+  .run();
 ```
 
-- **`.prepare("... ?...")`** — o texto do SQL, com **`?`** onde entram os valores.
-- **`.bind(a, b, c)`** — preenche os `?`, **na ordem**.
-- **`.run()`** — executa quando **não** espera linhas de volta (ex.: `INSERT`).
-- **`.first()`** — devolve **a primeira linha** (ex.: `/get`, `/media`).
-- **`.all()`** — devolve **todas as linhas** em `results` (ex.: `/list`, `/resumo`).
+- **`.prepare("... ?...")`** — o SQL, com **`?`** onde entram os valores.
+- **`.bind(a, b, c)`** — preenche os `?`, na ordem.
+- **`.run()`** — executa sem esperar linhas (ex.: `INSERT`). **`.first()`** — a primeira linha.
+  **`.all()`** — todas as linhas (em `results`).
 
-> **Por que os `?` e o `.bind()`?** Nunca cole o valor direto no texto do SQL. Se alguém enviar
-> um texto malicioso, ele poderia virar comando e bagunçar o banco — o ataque chamado
-> **SQL injection**. Usar `?` + `.bind()` é o jeito **seguro** e correto.
+> **Segurança:** nunca cole o valor direto no texto do SQL. Use `?` + `.bind()` — protege contra
+> **SQL injection**.
 
-## 10. A grande sacada: o ESP32 não muda
-
-Trocamos o banco inteiro (KV → D1) e reescrevemos o Worker, mas o **ESP32 continua fazendo a
-mesma coisa**: conecta no Wi-Fi e manda `POST /insert` com um JSON. Ele **não sabe** o que tem
-atrás da API. Isso se chama **desacoplamento**: o dispositivo e o backend são independentes, e
-você pode evoluir um sem mexer no outro. (A única diferença desta vez é que o ESP32 manda
-**dois** valores — `temp` e `umid` — para darmos uso ao `GROUP BY`.)
+**A grande sacada:** trocamos o banco (KV → D1) e reescrevemos o Worker, mas o **ESP32 continua
+mandando JSON por HTTP** — ele não sabe o que tem atrás da API. Isso é **desacoplamento**: dá para
+evoluir o backend sem mexer no hardware.
 
 ---
 
 # Parte 2 — Construa (passo a passo)
 
-Agora a mão na massa. Faça **um passo de cada vez** e só siga adiante quando a verificação
-("Confira") der certo. As **telas de cada passo** (prints da Cloudflare) estão nos slides da aula.
+Faça **um passo de cada vez** e só siga quando o "Confira" der certo. As **telas de cada passo**
+(prints da Cloudflare) estão nos slides da aula.
 
 ### Passo 0 — Material e conta
 
-- Hardware: **ESP32** + **DHT11** + protoboard e jumpers (o mesmo da atividade anterior).
+- Hardware: **ESP32** + **DHT11** + protoboard e jumpers.
 - Uma conta no [Cloudflare](https://dash.cloudflare.com) (gratuita).
 
 ### Passo 1 — Criar o Worker (Workers & Pages)
 
-- **O que fazer:** ter um Worker com uma URL pública.
-- **Como:** no painel da Cloudflare, vá em **Workers & Pages → Create → Worker**, dê um nome
-  (ex.: `iot-d1`) e clique **Deploy**. Se você já tem o Worker da atividade do KV, pode reaproveitá-lo.
-- **Confira:** abra a URL que apareceu (ex.: `https://iot-d1.SEU-USUARIO.workers.dev`) — deve responder algo.
+- **Como:** **Workers & Pages → Create → Worker**, dê um nome (ex.: `iot-d1`) e **Deploy**. (Pode reaproveitar o Worker do KV.)
+- **Confira:** a URL (ex.: `https://iot-d1.SEU-USUARIO.workers.dev`) responde algo.
 
 ### Passo 2 — Criar o banco D1
 
-- **O que fazer:** criar o banco de dados.
-- **Como:** no painel, procure por **Storage & Databases → D1** e clique **Create** (ou "Create database"). Dê um nome, ex.: **`iot`**.
-- **Por quê:** é onde a tabela e as leituras vão morar.
-- **Confira:** o banco `iot` aparece na lista de bancos D1.
+- **Como:** **Storage & Databases → D1 → Create**. Nome: **`iot`**.
+- **Confira:** o banco `iot` aparece na lista.
 
-### Passo 3 — Associar o Worker ao D1 (o binding `DB`)
+### Passo 3 — Associar o Worker ao D1 (binding `DB`)
 
-- **O que fazer:** ligar o seu Worker ao banco, para o código enxergar `env.DB`.
-- **Como:** abra o **seu Worker → Settings → Bindings** (ou "Variables & Bindings") →
-  **Add binding → D1 database**. Em **Variable name** escreva exatamente **`DB`**, escolha o
-  banco `iot`, salve e faça **Deploy**.
-- **Por quê:** sem o binding, o Worker não consegue falar com o banco.
-- **Confira:** o binding `DB → iot` aparece listado nas configurações do Worker.
+- **Como:** **seu Worker → Settings → Bindings → Add binding → D1 database**. Variable name: **`DB`**, banco `iot`. Salve e **Deploy**.
+- **Por quê:** sem o binding, o código não enxerga `env.DB`.
+- **Confira:** o binding `DB → iot` aparece nas configurações.
 
-### Passo 4 — Criar a tabela `leituras`
+### Passo 4 — Criar as DUAS tabelas
 
-- **O que fazer:** criar a estrutura onde os dados vão morar.
-- **Como:** abra o banco **`iot`** no painel do D1, vá na aba **Console** (ou "Query"), cole o
-  comando abaixo e clique **Execute/Run**:
-  ```sql
-  CREATE TABLE IF NOT EXISTS leituras (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    sensor    TEXT    NOT NULL,
-    valor     REAL    NOT NULL,
-    timestamp INTEGER NOT NULL
-  );
-  ```
-- **Confira:** rode `SELECT * FROM leituras;` — deve executar sem erro (ainda sem linhas).
+- **Como:** abra o banco `iot` → aba **Console** e rode os **dois** comandos (seção [As tabelas](#5-as-tabelas-do-projeto)): `CREATE TABLE ... leituras` e `CREATE TABLE ... conexoes`.
+- **Confira:** `SELECT * FROM leituras;` e `SELECT * FROM conexoes;` executam sem erro.
 
-### Passo 5 — Programar o Worker (`/insert` e `/get`)
+### Passo 5 — Programar o Worker
 
-- **O que fazer:** fazer o Worker gravar e ler usando SQL.
-- **Como:** no editor do Worker (**Edit code**), apague o conteúdo e cole o **primeiro bloco** da
-  seção [Código do Worker](#código-do-worker). Clique **Deploy**.
-- **Entenda:** o `/insert` roda um `INSERT INTO`; o `/get` roda um `SELECT ... ORDER BY timestamp DESC LIMIT 1` (o "último valor").
-- **Confira:** abra `SUA-URL/get?sensor=temp` no navegador — deve dizer "Nenhum valor encontrado" (404), porque ainda não gravamos nada. Está certo!
+- **Como:** no editor do Worker, cole o código da seção [Código do Worker](#código-do-worker) (já traz todos os endpoints) e **Deploy**.
+- **Confira:** `SUA-URL/get?sensor=temp` responde 404 ("Nenhum valor") — normal, ainda sem dados.
 
-### Passo 6 — Testar gravando e lendo (PowerShell)
+### Passo 6 — Testar gravando à mão (PowerShell)
 
-- **O que fazer:** gravar algumas leituras à mão e conferir.
-- **Como:** rode os comandos da seção [Testando pelo PowerShell](#testando-pelo-powershell). Grave 3 ou 4 valores diferentes de `temp`.
-- **Confira:** `GET /get?sensor=temp` devolve o último valor gravado. **Tire um print.**
+- **Como:** rode os comandos da seção [Testando pelo PowerShell](#testando-pelo-powershell): grave alguns `temp` e alguns `umid`.
+- **Confira:** `/list?sensor=temp` e `/list?sensor=umid` mostram as leituras; `/resumo` mostra os dois sensores. **Print.**
 
-### Passo 7 — ESP32 enviando temperatura E umidade
+### Passo 7 — ESP32: temperatura, umidade E log de conexão
 
-- **O que fazer:** o sensor real alimenta o banco.
-- **Como:** ligue o DHT11 (`VCC→3V3`, `GND→GND`, `DATA→GPIO 4`), instale a biblioteca **"DHT sensor library"** (Adafruit) e envie o código da seção [Código do ESP32](#código-do-esp32). Ele lê o DHT11, envia `temp` **e** `umid`, e entra em **deep sleep** por 30 s.
-- **Por quê:** dois sensores dão sentido ao `GROUP BY`; o deep sleep é a economia de energia da aula anterior.
-- **Confira:** no Serial Monitor você vê os dois envios e o "Dormindo…". Em `SUA-URL/get?sensor=umid` aparece a umidade.
+- **Como:** ligue o DHT11 (`VCC→3V3`, `GND→GND`, `DATA→GPIO 4`), instale a biblioteca **"DHT sensor library"** (Adafruit) e envie o código da seção [Código do ESP32](#código-do-esp32). A cada ciclo ele: mede o **tempo para conectar**, pega **IP** e **RSSI**, envia **`temp`** e **`umid`**, envia o **log** (`/log`) e entra em **deep sleep**.
+- **Confira:** no Serial Monitor aparecem o IP, o RSSI, o tempo e os envios. Em `SUA-URL/get?sensor=umid` aparece a umidade; em `SUA-URL/logs` aparece o log. **Print.**
 
-### Passo 8 — Consultas de análise (`/list` e `/media`)
+### Passo 8 — Consultas de análise e o resumo
 
-- **O que fazer:** responder perguntas sobre os dados.
-- **Como:** troque o Worker pelo **segundo bloco** da seção [Código do Worker](#código-do-worker) e faça **Deploy**.
-- **Confira:** `SUA-URL/media?sensor=temp` devolve **média, mínima, máxima e contagem** da temperatura. **Tire um print.**
+- **Confira:** `SUA-URL/media?sensor=temp` (média/mín/máx/contagem) e `SUA-URL/resumo` (os dois sensores, com `GROUP BY`) respondem certo. `SUA-URL/logs` lista as conexões. **Prints.**
 
-### Passo 9 — `GROUP BY` com `/resumo`
+### Passo 9 — Entregar (produto funcional)
 
-- **O que fazer:** um resumo de **todos** os sensores numa consulta só.
-- **Como:** o mesmo segundo bloco já tem o `/resumo` (usa `GROUP BY sensor`).
-- **Confira:** `SUA-URL/resumo` devolve **uma linha para `temp` e outra para `umid`**, cada uma com média, máximo e contagem. **Tire um print.**
+Sua estação precisa estar **funcionando de verdade**. Para entregar:
 
-### Passo 10 — Entregar
-
-- Preencha o **`ENTREGA.md`** com suas respostas, as **consultas SQL** que usou e os **prints**.
-- Entregue ao professor da forma combinada (plataforma da turma / e-mail).
+1. O ESP32 grava **temperatura e umidade** reais (DHT11) — confirmado em `/list?sensor=temp` e `/list?sensor=umid`.
+2. O `/resumo` mostra os **dois sensores** com `GROUP BY`.
+3. O **log de conexão** funciona: `/logs` mostra **IP, RSSI, tempo de conexão e internet** de cada ciclo.
+4. Preencha o **`ENTREGA.md`** (respostas, consultas SQL e prints) e entregue ao professor da forma combinada.
 
 ---
 
@@ -318,55 +260,16 @@ Agora a mão na massa. Faça **um passo de cada vez** e só siga adiante quando 
 
 ## Código do Worker
 
-Comece pelo **primeiro bloco** (Passo 5). No **Passo 8** troque pelo **segundo bloco**.
-
-### Bloco 1 — `/insert` e `/get`
-
 ```javascript
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // Gravar uma leitura
+    // ---- SENSORES ----
     if (url.pathname === "/insert" && request.method === "POST") {
       const body = await request.json();               // { sensor, valor }
       const sensor = body.sensor || "temp";
       const valor  = Number(body.valor ?? 0);
-
-      await env.DB.prepare(
-        "INSERT INTO leituras (sensor, valor, timestamp) VALUES (?, ?, ?)"
-      ).bind(sensor, valor, Date.now()).run();
-
-      return new Response(`OK: ${sensor}=${valor}`);
-    }
-
-    // Ler o último valor de um sensor
-    if (url.pathname === "/get") {
-      const sensor = url.searchParams.get("sensor") || "temp";
-      const row = await env.DB.prepare(
-        "SELECT valor, timestamp FROM leituras WHERE sensor = ? ORDER BY timestamp DESC LIMIT 1"
-      ).bind(sensor).first();
-
-      if (!row) return new Response("Nenhum valor encontrado", { status: 404 });
-      return Response.json(row);
-    }
-
-    return new Response("Use POST /insert ou GET /get?sensor=temp");
-  }
-}
-```
-
-### Bloco 2 — adiciona `/list`, `/media` e `/resumo`
-
-```javascript
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-
-    if (url.pathname === "/insert" && request.method === "POST") {
-      const body = await request.json();
-      const sensor = body.sensor || "temp";
-      const valor  = Number(body.valor ?? 0);
       await env.DB.prepare(
         "INSERT INTO leituras (sensor, valor, timestamp) VALUES (?, ?, ?)"
       ).bind(sensor, valor, Date.now()).run();
@@ -382,7 +285,6 @@ export default {
       return Response.json(row);
     }
 
-    // Últimas 50 leituras de um sensor
     if (url.pathname === "/list") {
       const sensor = url.searchParams.get("sensor") || "temp";
       const { results } = await env.DB.prepare(
@@ -391,7 +293,6 @@ export default {
       return Response.json(results);
     }
 
-    // Média, mínima, máxima e contagem de um sensor
     if (url.pathname === "/media") {
       const sensor = url.searchParams.get("sensor") || "temp";
       const row = await env.DB.prepare(
@@ -402,7 +303,6 @@ export default {
       return Response.json(row);
     }
 
-    // Resumo de TODOS os sensores de uma vez (GROUP BY)
     if (url.pathname === "/resumo") {
       const { results } = await env.DB.prepare(
         `SELECT sensor, AVG(valor) AS media, MAX(valor) AS maximo, COUNT(*) AS n
@@ -411,37 +311,48 @@ export default {
       return Response.json(results);
     }
 
-    return new Response("Use /insert, /get, /list, /media ou /resumo");
+    // ---- LOG DE CONEXAO ----
+    if (url.pathname === "/log" && request.method === "POST") {
+      const b = await request.json();   // { ip, rssi, tempo_ms, internet }
+      await env.DB.prepare(
+        "INSERT INTO conexoes (ip, rssi, tempo_ms, internet, timestamp) VALUES (?, ?, ?, ?, ?)"
+      ).bind(b.ip || "", Number(b.rssi ?? 0), Number(b.tempo_ms ?? 0),
+             Number(b.internet ?? 0), Date.now()).run();
+      return new Response("LOG OK");
+    }
+
+    if (url.pathname === "/logs") {
+      const { results } = await env.DB.prepare(
+        "SELECT ip, rssi, tempo_ms, internet, timestamp FROM conexoes ORDER BY timestamp DESC LIMIT 50"
+      ).all();
+      return Response.json(results);
+    }
+
+    return new Response("Use /insert, /get, /list, /media, /resumo, /log, /logs");
   }
 }
 ```
 
-> **Boas práticas:** os valores sempre entram por `?` + `.bind(...)`, nunca colados no texto do
-> SQL. Além de ser o jeito certo, protege contra **SQL injection**.
-
 ## Testando pelo PowerShell
 
-Troque a URL pela do **seu** Worker.
-
 ```powershell
-# Gravar uma leitura de temperatura
-Invoke-RestMethod `
-  -Uri "https://sua-api.SEU-USUARIO.workers.dev/insert" `
-  -Method POST `
-  -Body (@{ sensor="temp"; valor=27.8 } | ConvertTo-Json) `
-  -ContentType "application/json"
+# Gravar temperatura e umidade
+Invoke-RestMethod -Uri "https://sua-api.SEU-USUARIO.workers.dev/insert" -Method POST `
+  -Body (@{ sensor="temp"; valor=27.8 } | ConvertTo-Json) -ContentType "application/json"
+Invoke-RestMethod -Uri "https://sua-api.SEU-USUARIO.workers.dev/insert" -Method POST `
+  -Body (@{ sensor="umid"; valor=61 } | ConvertTo-Json) -ContentType "application/json"
 
-# Consultas
-Invoke-RestMethod -Uri "https://sua-api.SEU-USUARIO.workers.dev/get?sensor=temp"
+# Consultar
 Invoke-RestMethod -Uri "https://sua-api.SEU-USUARIO.workers.dev/list?sensor=temp"
+Invoke-RestMethod -Uri "https://sua-api.SEU-USUARIO.workers.dev/list?sensor=umid"
 Invoke-RestMethod -Uri "https://sua-api.SEU-USUARIO.workers.dev/media?sensor=temp"
 Invoke-RestMethod -Uri "https://sua-api.SEU-USUARIO.workers.dev/resumo"
+Invoke-RestMethod -Uri "https://sua-api.SEU-USUARIO.workers.dev/logs"
 ```
 
 ## Código do ESP32
 
-**É quase igual ao da atividade anterior** — a diferença é enviar **dois valores** (temperatura
-e umidade). Credenciais no `config.h`:
+Credenciais no `config.h`:
 
 ```cpp
 // config.h
@@ -462,8 +373,8 @@ DHT dht(DHTPIN, DHTTYPE);
 
 RTC_DATA_ATTR int envios = 0;          // sobrevive ao deep sleep
 
-// Envia um valor para o Worker (POST /insert)
-void enviar(const char* sensor, float valor) {
+// Envia um valor de sensor (POST /insert). Devolve o codigo HTTP.
+int enviar(const char* sensor, float valor) {
   HTTPClient http;
   http.begin(String(WORKER_URL) + "/insert");
   http.addHeader("Content-Type", "application/json");
@@ -471,25 +382,52 @@ void enviar(const char* sensor, float valor) {
   int code = http.POST(corpo);
   Serial.printf("  %s=%.1f -> HTTP %d\n", sensor, valor, code);
   http.end();
+  return code;
+}
+
+// Envia o log de conexao (POST /log)
+void enviarLog(String ip, int rssi, long tempo_ms, int internet) {
+  HTTPClient http;
+  http.begin(String(WORKER_URL) + "/log");
+  http.addHeader("Content-Type", "application/json");
+  String corpo = "{\"ip\":\"" + ip + "\",\"rssi\":" + String(rssi) +
+                 ",\"tempo_ms\":" + String(tempo_ms) +
+                 ",\"internet\":" + String(internet) + "}";
+  int code = http.POST(corpo);
+  Serial.printf("  LOG (ip=%s rssi=%d %ldms net=%d) -> HTTP %d\n",
+                ip.c_str(), rssi, tempo_ms, internet, code);
+  http.end();
 }
 
 void setup() {
   Serial.begin(115200);
   dht.begin();
 
-  WiFi.begin(WIFI_SSID, WIFI_PASS);              // 1) conecta no Wi-Fi
+  // 1) Conecta no Wi-Fi medindo o tempo
+  unsigned long t0 = millis();
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.print("Conectando ao WiFi");
-  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
-  Serial.println(" ok");
+  while (WiFi.status() != WL_CONNECTED) { delay(200); Serial.print("."); }
+  long tempo = millis() - t0;                 // tempo para conectar (ms)
+  String ip  = WiFi.localIP().toString();     // IP recebido na rede
+  int   rssi = WiFi.RSSI();                    // forca do sinal (dBm)
+  Serial.printf("\n ok | IP=%s | RSSI=%d dBm | %ld ms\n", ip.c_str(), rssi, tempo);
 
-  float t = dht.readTemperature();               // 2) le o sensor fisico
-  float h = dht.readHumidity();
+  // 2) Le o DHT11 e envia temperatura E umidade
   envios++;
   Serial.printf("Envio #%d\n", envios);
-  if (!isnan(t)) enviar("temp", t);              // 3) envia os dois valores
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+  int code = 0;
+  if (!isnan(t)) code = enviar("temp", t);
   if (!isnan(h)) enviar("umid", h);
 
-  const uint64_t DORME_SEG = 30;                 // 4) dorme para poupar energia
+  // 3) Envia o log de conexao (internet = a nuvem respondeu?)
+  int internet = (code > 0) ? 1 : 0;
+  enviarLog(ip, rssi, tempo, internet);
+
+  // 4) Deep sleep para economizar energia
+  const uint64_t DORME_SEG = 30;
   Serial.printf("Dormindo por %llu s...\n", DORME_SEG);
   Serial.flush();
   esp_sleep_enable_timer_wakeup(DORME_SEG * 1000000ULL);
@@ -503,26 +441,29 @@ void loop() { }   // nunca executa: tudo esta no setup()
 
 # Entrega
 
-Ao terminar o **Passo 10**: `ENTREGA.md` preenchido (respostas + consultas SQL + prints),
-entregue ao professor da forma combinada. **Prazo:** a combinar.
+**Produto final:** uma estação que grava temperatura e umidade reais no D1, lista as duas,
+faz resumos com SQL e mantém um log das conexões do dispositivo. Entregue o `ENTREGA.md`
+preenchido (respostas + consultas SQL + prints) ao professor da forma combinada.
 
 ## Critérios de avaliação
 
 | Critério | Peso |
 |---|---|
-| Sistema funcionando: ESP32 → D1 → consultas respondendo | 40% |
-| Modelagem e SQL corretos (tabela, `INSERT`, `SELECT`, `WHERE`) | 25% |
-| Consultas de análise (`AVG`/`COUNT`/`MIN`/`MAX`) e `GROUP BY` no `/resumo` | 20% |
-| `ENTREGA.md`: respostas e prints | 15% |
+| Sistema funcionando de ponta a ponta (ESP32 → D1 → consultas) | 30% |
+| **Dois sensores** (temp e umid) gravando e listando (`/list`, `/resumo`) | 20% |
+| **Log de conexão** funcionando: IP, RSSI, tempo e internet (`/log`, `/logs`) | 25% |
+| SQL e modelagem corretos (as duas tabelas, `INSERT`/`SELECT`/`WHERE`/`GROUP BY`) | 15% |
+| `ENTREGA.md`: respostas e prints | 10% |
 
 ## Perguntas para responder no `ENTREGA.md`
 
-1. Qual a diferença entre o **KV** (chave-valor) e um **banco relacional** como o D1? Quando cada um é melhor?
-2. O que é o **D1** e o que é o **binding `DB`**?
-3. Explique a tabela `leituras`: o que é cada **coluna** e seu **tipo**. Para que serve a **chave primária**?
-4. Escreva a consulta SQL da **média da temperatura**. E a que **conta** quantas leituras de temperatura passaram de 30.
-5. Para que serve o **`GROUP BY`** no `/resumo`? O que ele devolve?
-6. Por que usamos `?` + `.bind(...)` em vez de colar o valor no texto do SQL?
-7. O código do **ESP32** mudou muito ao trocar o KV pelo D1? O que isso ensina sobre a arquitetura?
+1. Qual a diferença entre o **KV** e um **banco relacional** (D1)? Quando cada um é melhor?
+2. O que é o **binding `DB`** e para que serve?
+3. Explique as tabelas `leituras` e `conexoes`: colunas, tipos e a chave primária.
+4. Escreva a consulta SQL da **média da temperatura** e a que **conta** quantas leituras passaram de 30.
+5. Para que serve o **`GROUP BY`** no `/resumo`?
+6. O que o **log de conexão** registra? Por que isso é útil num projeto de IoT no campo?
+7. Como o ESP32 **mede o tempo de conexão**? O que são o **IP** e o **RSSI**?
+8. Conectar no roteador é o mesmo que ter **internet**? Como o log distingue as duas coisas?
 
 Bom trabalho! 🚀
