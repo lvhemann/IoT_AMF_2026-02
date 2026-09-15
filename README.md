@@ -443,27 +443,26 @@ void loop() { }   // nunca executa: tudo esta no setup()
 
 **Produto final:** uma estação que grava temperatura e umidade reais no D1, lista as duas,
 faz resumos com SQL e mantém um log das conexões do dispositivo. Entregue o `ENTREGA.md`
-preenchido (respostas + consultas SQL + prints) ao professor da forma combinada.
+preenchido (respostas + consultas SQL + prints).
 
-## Critérios de avaliação
+## Perguntas para responder
 
-| Critério | Peso |
-|---|---|
-| Sistema funcionando de ponta a ponta (ESP32 → D1 → consultas) | 30% |
-| **Dois sensores** (temp e umid) gravando e listando (`/list`, `/resumo`) | 20% |
-| **Log de conexão** funcionando: IP, RSSI, tempo e internet (`/log`, `/logs`) | 25% |
-| SQL e modelagem corretos (as duas tabelas, `INSERT`/`SELECT`/`WHERE`/`GROUP BY`) | 15% |
-| `ENTREGA.md`: respostas e prints | 10% |
+**Banco de dados**
 
-## Perguntas para responder no `ENTREGA.md`
+1. Com suas palavras, qual a diferença entre um banco **chave-valor (KV)** e um **relacional (D1)**? Dê um exemplo de pergunta que é fácil de responder no D1 e difícil no KV.
+2. O que é o **binding `DB`**? Sem ele, o que aconteceria ao usar `env.DB` no Worker?
+3. Descreva as tabelas `leituras` e `conexoes`: o que cada **coluna** guarda e o seu **tipo**. O que é a **chave primária** (`id`) e para que serve?
 
-1. Qual a diferença entre o **KV** e um **banco relacional** (D1)? Quando cada um é melhor?
-2. O que é o **binding `DB`** e para que serve?
-3. Explique as tabelas `leituras` e `conexoes`: colunas, tipos e a chave primária.
-4. Escreva a consulta SQL da **média da temperatura** e a que **conta** quantas leituras passaram de 30.
-5. Para que serve o **`GROUP BY`** no `/resumo`?
-6. O que o **log de conexão** registra? Por que isso é útil num projeto de IoT no campo?
-7. Como o ESP32 **mede o tempo de conexão**? O que são o **IP** e o **RSSI**?
-8. Conectar no roteador é o mesmo que ter **internet**? Como o log distingue as duas coisas?
+**SQL**
 
-Bom trabalho! 🚀
+4. Escreva a consulta SQL que retorna a **média da temperatura**.
+5. Escreva a consulta SQL que **conta quantas leituras de temperatura passaram de 30**.
+6. O que o **`GROUP BY sensor`** faz no `/resumo`? Quantas linhas ele devolve na sua estação, e por quê?
+
+**Dispositivo e conexão**
+
+7. Quais dados o **log de conexão** registra? Explique como cada um ajuda a diagnosticar um sensor instalado no campo.
+8. Como o ESP32 calcula o **tempo de conexão**? O que representam o **IP** e o **RSSI** de uma conexão Wi-Fi?
+9. Conectar-se ao roteador é o mesmo que ter **internet**? Explique como o campo **`internet`** do log distingue as duas situações.
+
+Bom trabalho! 
