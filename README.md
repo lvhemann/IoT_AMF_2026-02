@@ -9,20 +9,21 @@
 > de 30°C?*, *qual a máxima do dia?*. E o melhor: **o ESP32 quase não muda.**
 
 Este documento tem duas partes. A **Parte 1 — Entenda** explica os conceitos (leia com
-calma, é o conteúdo da aula). A **Parte 2 — Construa** é o passo a passo para você montar e
-entregar. Leia a Parte 1 antes de pôr a mão na massa.
+calma, é o conteúdo da aula). A **Parte 2 — Construa** é o passo a passo para você montar.
+Leia a Parte 1 antes de pôr a mão na massa.
 
 **Sumário**
 - [Parte 1 — Entenda](#parte-1--entenda)
   - [1. O problema que o KV não resolvia bem](#1-o-problema-que-o-kv-não-resolvia-bem)
   - [2. O que é um banco de dados relacional](#2-o-que-é-um-banco-de-dados-relacional)
-  - [3. O que é o Cloudflare D1](#3-o-que-é-o-cloudflare-d1)
-  - [4. Tabelas: linhas, colunas, tipos e chave primária](#4-tabelas-linhas-colunas-tipos-e-chave-primária)
-  - [5. SQL: a linguagem para conversar com o banco](#5-sql-a-linguagem-para-conversar-com-o-banco)
-  - [6. Funções de resumo (agregação)](#6-funções-de-resumo-agregação)
-  - [7. GROUP BY: resumo por grupo](#7-group-by-resumo-por-grupo)
-  - [8. Como o Worker conversa com o D1 (e segurança)](#8-como-o-worker-conversa-com-o-d1-e-segurança)
-  - [9. A grande sacada: o ESP32 não muda](#9-a-grande-sacada-o-esp32-não-muda)
+  - [3. KV × D1 (a comparação)](#3-kv--d1-a-comparação)
+  - [4. O que é o Cloudflare D1](#4-o-que-é-o-cloudflare-d1)
+  - [5. Tabelas: linhas, colunas, tipos e chave primária](#5-tabelas-linhas-colunas-tipos-e-chave-primária)
+  - [6. SQL: a linguagem para conversar com o banco](#6-sql-a-linguagem-para-conversar-com-o-banco)
+  - [7. Funções de resumo (agregação)](#7-funções-de-resumo-agregação)
+  - [8. GROUP BY: resumo por grupo](#8-group-by-resumo-por-grupo)
+  - [9. Como o Worker conversa com o D1 (e segurança)](#9-como-o-worker-conversa-com-o-d1-e-segurança)
+  - [10. A grande sacada: o ESP32 não muda](#10-a-grande-sacada-o-esp32-não-muda)
 - [Parte 2 — Construa (passo a passo)](#parte-2--construa-passo-a-passo)
 - [Código de referência](#código-de-referência)
 - [Entrega e perguntas](#entrega)
@@ -33,10 +34,11 @@ entregar. Leia a Parte 1 antes de pôr a mão na massa.
 
 ## 1. O problema que o KV não resolvia bem
 
-Na atividade anterior, o KV guardava os dados como **chave → valor**. Isso é ótimo para
-"pegar o último valor", mas ruim para **perguntar** coisas sobre os dados. Se você quisesse a
-**temperatura média da última hora**, teria que **listar todas** as leituras e calcular na mão,
-dentro do código. Conforme os dados crescem, isso fica lento e trabalhoso.
+Na atividade anterior, o KV guardava os dados como **chave → valor** (ex.: `sensor:123 → { "temp": 26.4 }`).
+É um banco **chave-valor distribuído globalmente**, ótimo para "pegar o último valor". Mas ele
+tem uma **limitação**: **não faz consultas complexas** (`SELECT`, `WHERE`, etc.). Se você
+quisesse a **temperatura média da última hora**, teria que **listar tudo** e calcular na mão,
+dentro do código.
 
 Bancos **relacionais** foram feitos exatamente para isso: **guardar muitos registros e responder
 perguntas sobre eles** com facilidade. É o que vamos usar agora.
@@ -51,17 +53,24 @@ A grande vantagem é que você conversa com o banco usando **SQL**, uma linguage
 **descreve o que quer** ("a média da temperatura", "as 10 últimas leituras", "quantas passaram
 de 30") e o banco faz o trabalho pesado de buscar e calcular.
 
-| | KV (antes) | Banco relacional / D1 (agora) |
-|---|---|---|
-| Organização | `chave → valor` | **tabelas** com linhas e colunas |
-| Como pergunto | pego uma chave; o resto é no código | escrevo uma consulta **SQL** |
-| "Média da temperatura" | listar tudo e somar na mão | `SELECT AVG(valor) ...` |
-| Melhor para | último valor, cache, estado simples | **histórico e análise** |
+## 3. KV × D1 (a comparação)
 
-## 3. O que é o Cloudflare D1
+| Banco | Modelo | Melhor para… | Limites / característica |
+|-------|--------|--------------|--------------------------|
+| **KV** | Chave-valor | Últimos estados, cache, configs | ~25 MB por valor; **consistência eventual** |
+| **D1** | **SQL** (SQLite) | Histórico, relatórios, consultas complexas | **SQL completo**; dados consistentes |
 
-O **D1** é o banco de dados **SQL serverless** da Cloudflare. Ele é baseado no **SQLite** (um
-banco relacional muito usado e leve). "Serverless" quer dizer o mesmo que no Worker: **você não
+Em uma frase: **KV para estado simples; D1 para histórico e análise.** No D1 você pode escrever,
+por exemplo:
+
+```sql
+SELECT * FROM leituras WHERE valor > 25 ORDER BY timestamp DESC;
+```
+
+## 4. O que é o Cloudflare D1
+
+O **D1** é o banco de dados **SQL serverless** da Cloudflare, baseado no **SQLite** (um banco
+relacional leve e muito usado). "Serverless" quer dizer o mesmo que no Worker: **você não
 administra servidor nenhum** — cria o banco pelo painel e pronto.
 
 Quem acessa o D1 é o seu **Worker**. Eles se conectam por um **binding** (uma "ligação")
@@ -71,7 +80,7 @@ chamado, nesta atividade, **`DB`**. No código do Worker, o banco aparece como `
 ESP32  ──POST /insert──▶  Worker  ──SQL via env.DB──▶  D1 (tabela "leituras")
 ```
 
-## 4. Tabelas: linhas, colunas, tipos e chave primária
+## 5. Tabelas: linhas, colunas, tipos e chave primária
 
 Antes de guardar qualquer dado, você precisa **criar a tabela** — definir quais colunas ela terá
 e o **tipo** de cada uma. A nossa tabela se chama `leituras`:
@@ -87,14 +96,10 @@ CREATE TABLE IF NOT EXISTS leituras (
 
 Entendendo cada parte:
 
-- **Coluna** — um campo do registro. Aqui: `id`, `sensor`, `valor`, `timestamp`.
-- **Tipo** — o que a coluna guarda. `INTEGER` (número inteiro), `REAL` (número com vírgula,
-  ex.: 27.8), `TEXT` (texto).
-- **`PRIMARY KEY AUTOINCREMENT`** — a **chave primária**: um identificador **único** de cada
-  linha. Com `AUTOINCREMENT`, o próprio banco numera as linhas (1, 2, 3, …) — você não precisa
-  se preocupar com o `id`.
-- **`NOT NULL`** — aquela coluna **não pode ficar vazia** (toda leitura tem que ter sensor,
-  valor e momento).
+- **Coluna** — um campo do registro: `id`, `sensor`, `valor`, `timestamp`.
+- **Tipo** — o que a coluna guarda. `INTEGER` (inteiro), `REAL` (número com vírgula, ex.: 27.8), `TEXT` (texto).
+- **`PRIMARY KEY AUTOINCREMENT`** — a **chave primária**: identificador **único** de cada linha. Com `AUTOINCREMENT`, o próprio banco numera as linhas (1, 2, 3…).
+- **`NOT NULL`** — a coluna **não pode ficar vazia**.
 
 Depois de gravar algumas leituras, a tabela fica assim:
 
@@ -104,33 +109,30 @@ Depois de gravar algumas leituras, a tabela fica assim:
 | 2  | umid   | 61.0  | 1699999990000 |
 | 3  | temp   | 28.1  | 1700000020000 |
 
-## 5. SQL: a linguagem para conversar com o banco
+## 6. SQL: a linguagem para conversar com o banco
 
 **SQL** (Structured Query Language) é a linguagem dos bancos relacionais. Você vai usar poucos
 comandos, e cada um faz uma coisa:
 
 - **`CREATE TABLE`** — cria a estrutura da tabela (você faz isso **uma vez**).
-  ```sql
-  CREATE TABLE leituras (id INTEGER PRIMARY KEY AUTOINCREMENT, sensor TEXT, valor REAL, timestamp INTEGER);
-  ```
 - **`INSERT INTO`** — adiciona **uma linha** (uma leitura).
   ```sql
   INSERT INTO leituras (sensor, valor, timestamp) VALUES ('temp', 27.8, 1699999990000);
   ```
-- **`SELECT ... FROM`** — **lê** dados de uma tabela.
+- **`SELECT ... FROM`** — **lê** dados.
   ```sql
   SELECT valor, timestamp FROM leituras;
   ```
-- **`WHERE`** — **filtra**: só as linhas que atendem à condição.
+- **`WHERE`** — **filtra** as linhas.
   ```sql
   SELECT valor FROM leituras WHERE sensor = 'temp';
   SELECT valor FROM leituras WHERE valor > 30;
   ```
-- **`ORDER BY`** — **ordena** o resultado (`ASC` crescente, `DESC` decrescente).
+- **`ORDER BY`** — **ordena** (`ASC` crescente, `DESC` decrescente).
   ```sql
   SELECT valor, timestamp FROM leituras ORDER BY timestamp DESC;   -- mais novas primeiro
   ```
-- **`LIMIT`** — **limita** a quantidade de linhas devolvidas.
+- **`LIMIT`** — **limita** a quantidade de linhas.
   ```sql
   SELECT valor FROM leituras ORDER BY timestamp DESC LIMIT 1;      -- só a mais nova (o "último valor")
   ```
@@ -138,7 +140,7 @@ comandos, e cada um faz uma coisa:
 Repare que **"ler o último valor"** (o que o `/get` fazia no KV) vira, no SQL, um
 `ORDER BY timestamp DESC LIMIT 1`.
 
-## 6. Funções de resumo (agregação)
+## 7. Funções de resumo (agregação)
 
 Aqui está o que o KV não fazia fácil. As **funções de agregação** olham para **várias linhas**
 e devolvem **um número que as resume**:
@@ -147,8 +149,6 @@ e devolvem **um número que as resume**:
 - **`AVG(valor)`** — média dos valores.
 - **`MIN(valor)`** / **`MAX(valor)`** — o menor / o maior valor.
 - **`SUM(valor)`** — a soma.
-
-Exemplos:
 
 ```sql
 -- Quantas leituras de temperatura existem?
@@ -163,7 +163,7 @@ SELECT COUNT(*) FROM leituras WHERE sensor = 'temp' AND valor > 30;
 
 Cada uma dessas perguntas, no KV, exigiria baixar tudo e calcular no código. No SQL, é **uma linha**.
 
-## 7. GROUP BY: resumo por grupo
+## 8. GROUP BY: resumo por grupo
 
 E se você quiser a média **de cada sensor** (temperatura e umidade) de uma vez? O **`GROUP BY`**
 separa as linhas em grupos e aplica a agregação **dentro de cada grupo**.
@@ -192,11 +192,10 @@ Devolve **uma linha por sensor**:
 | temp   | 27.95 | 28.1   |
 | umid   | 60.0  | 61.0   |
 
-Ou seja: o banco **agrupou** as linhas por `sensor` e calculou a média e o máximo em cada grupo.
 É por isso que, nesta atividade, o DHT11 envia **dois sensores** (`temp` e `umid`): para o
 `GROUP BY` ter o que agrupar.
 
-## 8. Como o Worker conversa com o D1 (e segurança)
+## 9. Como o Worker conversa com o D1 (e segurança)
 
 No Worker, você **prepara** o comando SQL, **liga** os valores e **executa**:
 
@@ -210,75 +209,60 @@ await env.DB
 - **`.prepare("... ?...")`** — o texto do SQL, com **`?`** onde entram os valores.
 - **`.bind(a, b, c)`** — preenche os `?`, **na ordem**.
 - **`.run()`** — executa quando **não** espera linhas de volta (ex.: `INSERT`).
-- **`.first()`** — executa e devolve **a primeira linha** (ex.: `/get`, `/media`).
-- **`.all()`** — executa e devolve **todas as linhas** em `results` (ex.: `/list`, `/resumo`).
+- **`.first()`** — devolve **a primeira linha** (ex.: `/get`, `/media`).
+- **`.all()`** — devolve **todas as linhas** em `results` (ex.: `/list`, `/resumo`).
 
-> **Por que os `?` e o `.bind()`?** Nunca cole o valor direto no texto do SQL (ex.:
-> `"... valor = " + entrada`). Se alguém enviar um texto malicioso, ele poderia virar comando
-> e bagunçar o banco — é o ataque chamado **SQL injection**. Usar `?` + `.bind()` é o jeito
-> **seguro** e correto.
+> **Por que os `?` e o `.bind()`?** Nunca cole o valor direto no texto do SQL. Se alguém enviar
+> um texto malicioso, ele poderia virar comando e bagunçar o banco — o ataque chamado
+> **SQL injection**. Usar `?` + `.bind()` é o jeito **seguro** e correto.
 
-## 9. A grande sacada: o ESP32 não muda
+## 10. A grande sacada: o ESP32 não muda
 
 Trocamos o banco inteiro (KV → D1) e reescrevemos o Worker, mas o **ESP32 continua fazendo a
 mesma coisa**: conecta no Wi-Fi e manda `POST /insert` com um JSON. Ele **não sabe** o que tem
 atrás da API. Isso se chama **desacoplamento**: o dispositivo e o backend são independentes, e
-você pode evoluir um sem mexer no outro. É um dos conceitos mais importantes de sistemas de IoT.
-
-(A única diferença no ESP32 desta vez é que ele manda **dois** valores — `temp` e `umid` — para
-darmos uso ao `GROUP BY`.)
+você pode evoluir um sem mexer no outro. (A única diferença desta vez é que o ESP32 manda
+**dois** valores — `temp` e `umid` — para darmos uso ao `GROUP BY`.)
 
 ---
 
 # Parte 2 — Construa (passo a passo)
 
-Agora a mão na massa. Faça **um passo de cada vez** e dê um **commit** ao final de cada um
-(veja como no Passo 1). Parte da avaliação é ver a atividade **evoluindo** nos commits, e não
-pronta de uma vez.
+Agora a mão na massa. Faça **um passo de cada vez** e só siga adiante quando a verificação
+("Confira") der certo. As **telas de cada passo** (prints da Cloudflare) estão nos slides da aula.
 
-### Passo 0 — Material e contas
+### Passo 0 — Material e conta
 
 - Hardware: **ESP32** + **DHT11** + protoboard e jumpers (o mesmo da atividade anterior).
-- Contas: uma no [GitHub](https://github.com) e uma no [Cloudflare](https://dash.cloudflare.com) (gratuitas).
-- **Faça o fork** deste repositório (botão **Fork**, no topo) e **clone** o seu fork:
-  ```bash
-  git clone https://github.com/SEU-USUARIO/atividade-iot-d1.git
-  cd atividade-iot-d1
-  ```
+- Uma conta no [Cloudflare](https://dash.cloudflare.com) (gratuita).
 
-### Passo 1 — O ciclo do Git (você vai repetir a cada passo)
-
-Depois de terminar um passo, salve no GitHub com três comandos:
-
-```bash
-git add .
-git commit -m "Passo 3: banco D1 criado e ligado ao Worker"
-git push
-```
-
-> Faça commits **pequenos e frequentes**, um por passo, com uma mensagem que diga o que você fez.
-
-### Passo 2 — Criar (ou abrir) o seu Worker
+### Passo 1 — Criar o Worker (Workers & Pages)
 
 - **O que fazer:** ter um Worker com uma URL pública.
 - **Como:** no painel da Cloudflare, vá em **Workers & Pages → Create → Worker**, dê um nome
-  (ex.: `iot-d1`) e clique **Deploy**. Se você já tem o Worker da atividade do KV, pode usar o mesmo.
-- **Confira:** abra a URL que apareceu (algo como `https://iot-d1.SEU-USUARIO.workers.dev`). Deve responder algo.
+  (ex.: `iot-d1`) e clique **Deploy**. Se você já tem o Worker da atividade do KV, pode reaproveitá-lo.
+- **Confira:** abra a URL que apareceu (ex.: `https://iot-d1.SEU-USUARIO.workers.dev`) — deve responder algo.
 
-### Passo 3 — Criar o banco D1 e ligá-lo ao Worker
+### Passo 2 — Criar o banco D1
 
-- **O que fazer:** criar o banco e conectá-lo ao Worker.
-- **Como:**
-  1. No painel, procure por **Storage & Databases → D1** e clique **Create** (ou "Create database"). Dê um nome, ex.: **`iot`**.
-  2. Abra o **seu Worker → Settings → Bindings** (ou "Variables & Bindings") → **Add binding → D1 database**.
-  3. Em **Variable name** escreva exatamente **`DB`** e escolha o banco `iot`. Salve e faça **Deploy**.
-- **Por quê:** o **binding** é o que permite o código escrever `env.DB`. Sem ele, o Worker não enxerga o banco.
-- **Confira:** o binding `DB → iot` deve aparecer listado nas configurações do Worker.
+- **O que fazer:** criar o banco de dados.
+- **Como:** no painel, procure por **Storage & Databases → D1** e clique **Create** (ou "Create database"). Dê um nome, ex.: **`iot`**.
+- **Por quê:** é onde a tabela e as leituras vão morar.
+- **Confira:** o banco `iot` aparece na lista de bancos D1.
+
+### Passo 3 — Associar o Worker ao D1 (o binding `DB`)
+
+- **O que fazer:** ligar o seu Worker ao banco, para o código enxergar `env.DB`.
+- **Como:** abra o **seu Worker → Settings → Bindings** (ou "Variables & Bindings") →
+  **Add binding → D1 database**. Em **Variable name** escreva exatamente **`DB`**, escolha o
+  banco `iot`, salve e faça **Deploy**.
+- **Por quê:** sem o binding, o Worker não consegue falar com o banco.
+- **Confira:** o binding `DB → iot` aparece listado nas configurações do Worker.
 
 ### Passo 4 — Criar a tabela `leituras`
 
 - **O que fazer:** criar a estrutura onde os dados vão morar.
-- **Como:** abra o banco **`iot`** no painel do D1 e vá na aba **Console** (ou "Query"). Cole o
+- **Como:** abra o banco **`iot`** no painel do D1, vá na aba **Console** (ou "Query"), cole o
   comando abaixo e clique **Execute/Run**:
   ```sql
   CREATE TABLE IF NOT EXISTS leituras (
@@ -288,7 +272,6 @@ git push
     timestamp INTEGER NOT NULL
   );
   ```
-- **Por quê:** você só pode gravar depois que a tabela existe (ver Parte 1, seção 4).
 - **Confira:** rode `SELECT * FROM leituras;` — deve executar sem erro (ainda sem linhas).
 
 ### Passo 5 — Programar o Worker (`/insert` e `/get`)
@@ -296,40 +279,38 @@ git push
 - **O que fazer:** fazer o Worker gravar e ler usando SQL.
 - **Como:** no editor do Worker (**Edit code**), apague o conteúdo e cole o **primeiro bloco** da
   seção [Código do Worker](#código-do-worker). Clique **Deploy**.
-- **Entenda o que colou:** o `/insert` roda um `INSERT INTO` com os valores vindos do JSON; o
-  `/get` roda um `SELECT ... ORDER BY timestamp DESC LIMIT 1` (o "último valor").
+- **Entenda:** o `/insert` roda um `INSERT INTO`; o `/get` roda um `SELECT ... ORDER BY timestamp DESC LIMIT 1` (o "último valor").
 - **Confira:** abra `SUA-URL/get?sensor=temp` no navegador — deve dizer "Nenhum valor encontrado" (404), porque ainda não gravamos nada. Está certo!
 
 ### Passo 6 — Testar gravando e lendo (PowerShell)
 
 - **O que fazer:** gravar algumas leituras à mão e conferir.
 - **Como:** rode os comandos da seção [Testando pelo PowerShell](#testando-pelo-powershell). Grave 3 ou 4 valores diferentes de `temp`.
-- **Confira:** `GET /get?sensor=temp` deve devolver o último valor que você gravou. **Tire um print.**
+- **Confira:** `GET /get?sensor=temp` devolve o último valor gravado. **Tire um print.**
 
 ### Passo 7 — ESP32 enviando temperatura E umidade
 
 - **O que fazer:** o sensor real alimenta o banco.
 - **Como:** ligue o DHT11 (`VCC→3V3`, `GND→GND`, `DATA→GPIO 4`), instale a biblioteca **"DHT sensor library"** (Adafruit) e envie o código da seção [Código do ESP32](#código-do-esp32). Ele lê o DHT11, envia `temp` **e** `umid`, e entra em **deep sleep** por 30 s.
-- **Por quê:** enviar dois sensores é o que dá sentido ao `GROUP BY` mais adiante; o deep sleep é a economia de energia da aula anterior.
-- **Confira:** no Serial Monitor você vê os dois envios e o "Dormindo…". No `SUA-URL/get?sensor=umid` deve aparecer a umidade.
+- **Por quê:** dois sensores dão sentido ao `GROUP BY`; o deep sleep é a economia de energia da aula anterior.
+- **Confira:** no Serial Monitor você vê os dois envios e o "Dormindo…". Em `SUA-URL/get?sensor=umid` aparece a umidade.
 
 ### Passo 8 — Consultas de análise (`/list` e `/media`)
 
 - **O que fazer:** responder perguntas sobre os dados.
 - **Como:** troque o Worker pelo **segundo bloco** da seção [Código do Worker](#código-do-worker) e faça **Deploy**.
-- **Confira:** `SUA-URL/media?sensor=temp` deve devolver a **média, a mínima, a máxima e a contagem** da temperatura. **Tire um print.**
+- **Confira:** `SUA-URL/media?sensor=temp` devolve **média, mínima, máxima e contagem** da temperatura. **Tire um print.**
 
 ### Passo 9 — `GROUP BY` com `/resumo`
 
 - **O que fazer:** um resumo de **todos** os sensores numa consulta só.
 - **Como:** o mesmo segundo bloco já tem o `/resumo` (usa `GROUP BY sensor`).
-- **Confira:** `SUA-URL/resumo` deve devolver **uma linha para `temp` e outra para `umid`**, cada uma com média, máximo e contagem. **Tire um print.**
+- **Confira:** `SUA-URL/resumo` devolve **uma linha para `temp` e outra para `umid`**, cada uma com média, máximo e contagem. **Tire um print.**
 
-### Passo 10 — Documentar e entregar
+### Passo 10 — Entregar
 
-- Preencha o **`ENTREGA.md`** com suas respostas, as consultas SQL que usou e os prints.
-- Faça o último commit (`git add . && git commit -m "Entrega final" && git push`) e abra um
-  **Pull Request** (na página do seu fork: **Contribute → Open pull request**) com o **seu nome** no título.
+- Preencha o **`ENTREGA.md`** com suas respostas, as **consultas SQL** que usou e os **prints**.
+- Entregue ao professor da forma combinada (plataforma da turma / e-mail).
 
 ---
 
@@ -435,6 +416,9 @@ export default {
 }
 ```
 
+> **Boas práticas:** os valores sempre entram por `?` + `.bind(...)`, nunca colados no texto do
+> SQL. Além de ser o jeito certo, protege contra **SQL injection**.
+
 ## Testando pelo PowerShell
 
 Troque a URL pela do **seu** Worker.
@@ -457,10 +441,10 @@ Invoke-RestMethod -Uri "https://sua-api.SEU-USUARIO.workers.dev/resumo"
 ## Código do ESP32
 
 **É quase igual ao da atividade anterior** — a diferença é enviar **dois valores** (temperatura
-e umidade). Credenciais no `config.h` (não versionar):
+e umidade). Credenciais no `config.h`:
 
 ```cpp
-// config.h  — NÃO versionar (está no .gitignore)
+// config.h
 #define WIFI_SSID   "SEU_WIFI"
 #define WIFI_PASS   "SUA_SENHA"
 #define WORKER_URL  "https://sua-api.SEU-USUARIO.workers.dev"
@@ -519,18 +503,17 @@ void loop() { }   // nunca executa: tudo esta no setup()
 
 # Entrega
 
-Ao terminar o **Passo 10**: `ENTREGA.md` preenchido (respostas + consultas SQL + prints), tudo
-commitado, e **Pull Request** aberto com o seu nome no título. **Prazo:** a combinar com o professor.
+Ao terminar o **Passo 10**: `ENTREGA.md` preenchido (respostas + consultas SQL + prints),
+entregue ao professor da forma combinada. **Prazo:** a combinar.
 
 ## Critérios de avaliação
 
 | Critério | Peso |
 |---|---|
-| Sistema funcionando: ESP32 → D1 → consultas respondendo | 35% |
-| Modelagem e SQL corretos (tabela, `INSERT`, `SELECT`, `WHERE`) | 20% |
+| Sistema funcionando: ESP32 → D1 → consultas respondendo | 40% |
+| Modelagem e SQL corretos (tabela, `INSERT`, `SELECT`, `WHERE`) | 25% |
 | Consultas de análise (`AVG`/`COUNT`/`MIN`/`MAX`) e `GROUP BY` no `/resumo` | 20% |
-| Uso do Git: commits por passo, com histórico claro | 15% |
-| `ENTREGA.md`: respostas e prints | 10% |
+| `ENTREGA.md`: respostas e prints | 15% |
 
 ## Perguntas para responder no `ENTREGA.md`
 
