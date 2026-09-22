@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Painel IoT — MQTT</title>
+<!-- Biblioteca MQTT para o navegador (conecta por WebSocket seguro) -->
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, Arial, sans-serif; margin: 0; background:#0f172a; color:#e2e8f0; }
+  header { background:#1e293b; padding:16px 20px; }
+  h1 { margin:0; font-size:20px; }
+  .barra { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  input, button { font-size:14px; padding:8px 10px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:#e2e8f0; }
+  button { cursor:pointer; background:#2563eb; border-color:#2563eb; font-weight:600; }
+  button.cinza { background:#334155; border-color:#334155; }
+  main { padding:20px; max-width:900px; margin:0 auto; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:14px; }
+  .card { background:#1e293b; border-radius:12px; padding:16px; }
+  .card .rot { font-size:12px; color:#94a3b8; text-transform:uppercase; letter-spacing:1px; }
+  .card .val { font-size:30px; font-weight:700; margin-top:4px; }
+  .card .un  { font-size:14px; color:#94a3b8; }
+  .led { display:flex; align-items:center; gap:12px; background:#1e293b; border-radius:12px; padding:16px; margin-top:14px; }
+  .bulbo { width:40px; height:40px; border-radius:50%; background:#475569; box-shadow:0 0 0 4px #0f172a inset; }
+  .bulbo.on { background:#f59e0b; box-shadow:0 0 20px #f59e0b; }
+  .ctrl { background:#1e293b; border-radius:12px; padding:16px; margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .log { background:#020617; border-radius:12px; padding:12px; margin-top:14px; height:180px; overflow:auto; font-family:ui-monospace,Consolas,monospace; font-size:12px; color:#93c5fd; }
+  .st { padding:3px 10px; border-radius:999px; font-size:12px; font-weight:700; }
+  .st.on { background:#166534; color:#dcfce7; } .st.off { background:#7f1d1d; color:#fee2e2; }
+  small { color:#94a3b8; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Painel IoT — ouvindo por MQTT</h1>
+  <div class="barra">
+    <label><small>Seu prefixo:</small> sis1a/
+      <input id="nome" value="leonam" size="10"> /#
+    </label>
+    <button id="conectar">Conectar</button>
+    <span id="status" class="st off">desconectado</span>
+  </div>
+</header>
+
+<main>
+  <div class="cards">
+    <div class="card"><div class="rot">Temperatura</div><div class="val"><span id="temp">--</span><span class="un"> °C</span></div></div>
+    <div class="card"><div class="rot">Umidade</div><div class="val"><span id="umid">--</span><span class="un"> %</span></div></div>
+    <div class="card"><div class="rot">Dispositivo</div><div class="val" style="font-size:18px" id="estado">--</div></div>
+    <div class="card"><div class="rot">Wi-Fi</div><div class="val" style="font-size:16px" id="wifi">--</div></div>
+    <div class="card"><div class="rot">Sinal (RSSI)</div><div class="val"><span id="rssi">--</span><span class="un"> dBm</span></div></div>
+    <div class="card"><div class="rot">Hora local</div><div class="val" style="font-size:15px" id="hora">--</div></div>
+  </div>
+
+  <div class="led">
+    <div id="bulbo" class="bulbo"></div>
+    <div>LED — acende quando <b>temperatura &gt; limite</b>. Limite atual: <b id="limAtual">30</b> °C</div>
+  </div>
+
+  <div class="ctrl">
+    <label>Novo limite: <input id="limite" type="number" value="25" min="10" max="45" style="width:80px"></label>
+    <button id="enviarLimite">Enviar regra</button>
+    <button id="ledOn" class="cinza">LED ON</button>
+    <button id="ledOff" class="cinza">LED OFF</button>
+    <small>(estes botões publicam no tópico <code>.../comando</code>, que o ESP32 ouve)</small>
+  </div>
+
+  <div class="log" id="log"></div>
+</main>
+
+<script>
+  // Broker publico Eclipse Mosquitto. Rodando o arquivo LOCALMENTE (file://),
+  // usamos WebSocket comum (ws) na porta 8080. Se nao conectar, tente sem "/mqtt".
+  const URL_BROKER = "ws://test.mosquitto.org:8080/mqtt";
+  let client = null, base = "";
+
+  const $ = id => document.getElementById(id);
+  function log(txt) {
+    const l = $("log");
+    l.innerHTML = "[" + new Date().toLocaleTimeString() + "] " + txt + "<br>" + l.innerHTML;
+  }
+  function setStatus(ok) {
+    $("status").textContent = ok ? "conectado" : "desconectado";
+    $("status").className = "st " + (ok ? "on" : "off");
+  }
+  function atualizaLED() {
+    const t = parseFloat($("temp").textContent);
+    const lim = parseFloat($("limAtual").textContent);
+    $("bulbo").classList.toggle("on", !isNaN(t) && t > lim);
+  }
+
+  function conectar() {
+    base = "sis1a/" + $("nome").value.trim() + "/";
+    if (client) client.end(true);
+    log("Conectando em " + URL_BROKER + " ...");
+    client = mqtt.connect(URL_BROKER);
+
+    client.on("connect", () => {
+      setStatus(true);
+      client.subscribe(base + "#");        // OUVE tudo do prefixo
+      log("Conectado. Assinando " + base + "#");
+    });
+    client.on("close", () => setStatus(false));
+    client.on("error", e => log("Erro: " + e.message));
+
+    client.on("message", (topico, payload) => {
+      const v = payload.toString();
+      const nome = topico.replace(base, "");   // ex.: "temp"
+      log(topico + " = " + v);
+      if (nome === "temp")   { $("temp").textContent = v; atualizaLED(); }
+      if (nome === "umid")   $("umid").textContent = v;
+      if (nome === "led")    { $("bulbo").classList.toggle("on", v === "ON" || v === "1"); }
+      if (nome === "status") { $("estado").textContent = v; }
+      if (nome === "wifi")   $("wifi").textContent = v;
+      if (nome === "rssi")   $("rssi").textContent = v;
+      if (nome === "hora")   $("hora").textContent = v;
+    });
+  }
+
+  function enviarComando(msg) {
+    if (!client || !client.connected) { log("Conecte primeiro."); return; }
+    client.publish(base + "comando", msg);     // DEVOLVE o comando ao ESP32
+    log("ENVIADO -> " + base + "comando : " + msg);
+  }
+
+  $("conectar").onclick = conectar;
+  $("enviarLimite").onclick = () => {
+    const lim = $("limite").value;
+    $("limAtual").textContent = lim; atualizaLED();
+    enviarComando("limite:" + lim);            // troca a regra no ESP32
+  };
+  $("ledOn").onclick  = () => enviarComando("led:ON");
+  $("ledOff").onclick = () => enviarComando("led:OFF");
+</script>
+</body>
+</html>
