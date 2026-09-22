@@ -8,7 +8,7 @@ computador** (Python **ou** HTML) que lê e escreve
 - [Parte 1 — Entenda](#parte-1--entenda)
   - [1. MQTT: publicar e assinar](#1-mqtt-publicar-e-assinar)
   - [2. O broker: Eclipse Mosquitto](#2-o-broker-eclipse-mosquitto)
-  - [3. Tópicos e curingas](#3-tópicos-e-curingas)
+  - [3. Tópicos](#3-tópicos-e-curingas)
   - [4. Envio e recebimento](#4-envio-e-recebimento)
   - [5. Os logs (Wi-Fi e TLS)](#5-os-logs-wi-fi-e-tls)
   - [6. TLS e a hora certa](#6-tls-e-a-hora-certa)
@@ -46,7 +46,7 @@ Vamos usar o servidor **público de testes** dele, o **`test.mosquitto.org`** �
 senha, ideal para aprender. As ferramentas de linha de comando `mosquitto_sub` (assinar/ler) e
 `mosquitto_pub` (publicar/escrever) também são do Mosquitto.
 
-## 3. Tópicos e curingas
+## 3. Tópicos
 
 O **tópico** é o "assunto" da mensagem, escrito como um caminho, sob o prefixo `sis1a/SEU-NOME/`:
 
