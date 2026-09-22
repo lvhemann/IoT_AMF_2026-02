@@ -12,8 +12,8 @@
 #include <time.h>
 #include "config.h"
 
-// >>> TROQUE "leonam" por algo UNICO seu (nome/matricula) <<<
-#define NOME "leonam"
+// >>> TROQUE "NOME" por algo UNICO seu (nome/matricula) <<<
+#define NOME "NOME"
 
 #define DHTPIN 4
 #define DHTTYPE DHT11
