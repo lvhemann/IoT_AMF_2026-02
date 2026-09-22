@@ -182,7 +182,7 @@ Na entrega, **explique o trade-off** (energia × receber em tempo real — Parte
 Garanta que o seu serviço (Python ou HTML) **leia os novos tópicos** e continue **enviando** o
 comando para o ESP32.
 
-## Extensões (o professor indica quais valem nota)
+## Extensões
 - **Log de Wi-Fi completo** num tópico só (`log/wifi`) com SSID, RSSI, IP e tempo de conexão.
 - **Contador de boots** e **memória livre (heap)** no log — amarra com a aula de memória.
 - **Motivo do último acordar** (timer/reset) no log.
