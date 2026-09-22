@@ -1,546 +1,273 @@
-# IoT_AMF_2026-02
+# MQTT com Mosquitto
 
-## Monitor de Memória e Stack
+**Disciplina:** Internet das Coisas (IoT) · Turma AMF 2026-02
+**Plataforma:** ESP32 (Arduino) + **Eclipse Mosquitto** (`test.mosquitto.org`) + um **serviço no seu
+computador** (Python **ou** HTML) que lê e escreve
 
-```bash  
-  #include <Arduino.h>
+**Sumário**
+- [Parte 1 — Entenda](#parte-1--entenda)
+  - [1. MQTT: publicar e assinar](#1-mqtt-publicar-e-assinar)
+  - [2. O broker: Eclipse Mosquitto](#2-o-broker-eclipse-mosquitto)
+  - [3. Tópicos e curingas](#3-tópicos-e-curingas)
+  - [4. Envio e recebimento](#4-envio-e-recebimento)
+  - [5. Os logs (Wi-Fi e TLS)](#5-os-logs-wi-fi-e-tls)
+  - [6. TLS e a hora certa](#6-tls-e-a-hora-certa)
+  - [7. Deep Sleep: dormir para economizar](#7-deep-sleep-dormir-para-economizar)
+- [Parte 2 — O ponto de partida](#parte-2--o-ponto-de-partida)
+- [Parte 3 — O trabalho](#parte-3--o-trabalho)
+- [O serviço no seu computador](#o-serviço-no-seu-computador)
+- [Esquemático](#esquemático)
+- [Entrega e avaliação](#entrega-e-avaliação)
 
-void printMemoryInfo() {
-  // Heap (memória livre global)
-  size_t freeHeap = ESP.getFreeHeap();          // bytes livres no heap
-  size_t minHeap  = ESP.getMinFreeHeap();       // menor valor de heap já disponível
-  size_t maxAlloc = ESP.getMaxAllocHeap();      // maior bloco único alocável
+---
 
-  // Stack (da task atual)
-  size_t freeStack = uxTaskGetStackHighWaterMark(NULL); // em palavras de 4 bytes
-  freeStack *= sizeof(StackType_t);                     // converte para bytes
+# Parte 1 — Entenda
 
-  Serial.println("=== Memória ESP32 ===");
-  Serial.printf("Heap livre atual: %u bytes\n", freeHeap);
-  Serial.printf("Heap mínimo já visto: %u bytes\n", minHeap);
-  Serial.printf("Maior bloco contíguo disponível: %u bytes\n", maxAlloc);
-  Serial.printf("Stack livre da task atual: %u bytes\n", freeStack);
-  Serial.println("======================\n");
-}
+## 1. MQTT: publicar e assinar
 
-void setup() {
-  Serial.begin(115200);
-  delay(1000);
-}
+Nas atividades de HTTP (D1), a comunicação era **pergunta e resposta**: alguém pedia e recebia.
+Para saber um valor novo, tinha que **perguntar de novo** (isso é *pull*, puxar).
 
-void loop() {
-  printMemoryInfo();
-  delay(2000); // imprime a cada 2 segundos
-}
+O **MQTT** funciona por **publicar/assinar (pub/sub)** e é *push* (empurrar): um dispositivo
+**publica** uma mensagem **uma vez**, e **todos que assinaram** aquele assunto **recebem na hora**.
+Ninguém fica perguntando. É leve, rápido e feito para muitos dispositivos — por isso é o protocolo
+padrão de IoT. Há dois papéis:
+
+- **Publisher (publicador)** — quem **envia** uma mensagem.
+- **Subscriber (assinante)** — quem **assina** um assunto e passa a **receber** o que for publicado nele.
+
+O ESP32 será os **dois**: publica leituras/logs **e** assina um tópico para receber comandos.
+
+## 2. O broker: Eclipse Mosquitto
+
+Ninguém fala direto com ninguém no MQTT: **todos falam com o broker**, o servidor central que
+recebe as mensagens e as reparte para quem assinou. O **Mosquitto** é um broker MQTT muito usado.
+Vamos usar o servidor **público de testes** dele, o **`test.mosquitto.org`** — sem conta e sem
+senha, ideal para aprender. As ferramentas de linha de comando `mosquitto_sub` (assinar/ler) e
+`mosquitto_pub` (publicar/escrever) também são do Mosquitto.
+
+## 3. Tópicos e curingas
+
+O **tópico** é o "assunto" da mensagem, escrito como um caminho, sob o prefixo `sis1a/SEU-NOME/`:
 
 ```
+sis1a/NOME/temp        →  temperatura
+sis1a/NOME/umid        →  umidade
+sis1a/NOME/comando     →  ordens que voltam para o ESP32
+```
 
-## Blink com Monitor de Memória e Stack
+Ao **assinar**, você pode usar **curingas**:
+- **`+`** troca **um nível**: `sis1a/+/temp` = a temperatura de **todos** os alunos.
+- **`#`** troca **o resto**: `sis1a/NOME/#` = **tudo** do aluno "NOME".
+
+## 4. Envio e recebimento
+
+Pense em dois lados:
+
+- **Envio** — os tópicos onde o ESP32 **publica** (leituras e logs).
+- **Recebimento** — o tópico `comando`, que o ESP32 **assina** para **receber** ordens do seu
+  serviço (mudar o limite, ligar o LED). É o caminho de volta.
+
+## 5. Os logs (Wi-Fi e TLS)
+
+Numa estação de verdade não basta a leitura do sensor — você também quer saber se o **dispositivo
+está saudável**. Esses dados de diagnóstico formam os **logs**:
+
+- **Log de Wi-Fi:** **SSID** (qual rede), **RSSI** (força do sinal, em dBm — quanto mais perto de 0,
+  melhor: −45 é ótimo, −80 é fraco), **IP** (endereço que o roteador deu) e **tempo de conexão**
+  (quantos ms levou para conectar). Serve para diagnosticar, por exemplo, um sensor que demora
+  demais para conectar por estar longe do roteador.
+- **Log de TLS:** a **hora local** (obtida por NTP) e se o **relógio está sincronizado**. Por que a
+  hora entra num "log de TLS"? Veja a seção 6.
+
+## 6. TLS e a hora certa
+
+**TLS** é a camada que deixa a conexão **segura** (criptografada) — é o "cadeado" do HTTPS. Para
+confiar no servidor, o dispositivo valida um **certificado**, e essa validação **compara datas**:
+o certificado tem um período de validade. Se o **relógio do ESP32 estiver errado**, ele acha que o
+certificado está "fora da validade" e o **TLS falha** — a conexão segura nem começa.
+
+Por isso, dispositivos IoT **sincronizam a hora por NTP** assim que ligam. Nesta atividade usamos o
+Mosquitto público **sem TLS** (porta 1883), então a hora não é obrigatória aqui — mas já a
+**pegamos e reportamos no log**, como treino e porque ela vira **essencial** no momento em que você
+migra para um broker seguro (com usuário/senha e TLS, ou uma plataforma como AWS IoT Core).
+
+## 7. Deep Sleep: dormir para economizar
+
+Um sensor de campo costuma funcionar com **bateria**. Se ficar ligado o tempo todo com o Wi-Fi
+ativo (consumo de **~80 a 160 mA**), a bateria dura pouco. O **Deep Sleep** resolve: o ESP32
+**acorda, faz o trabalho e dorme**, desligando CPU e Wi-Fi — o consumo cai para a casa dos
+**microamperes**. Um temporizador o acorda de novo depois de um tempo.
+
+Dois pontos importantes:
+- Ao acordar do deep sleep, **o ESP32 reinicia** e roda o `setup()` de novo. Por isso, num programa
+  com deep sleep, **o trabalho fica no `setup()`** (o `loop()` quase não é usado).
+- Uma variável marcada com **`RTC_DATA_ATTR`** **sobrevive ao sono** e serve, por exemplo, para
+  **contar quantos ciclos** já aconteceram.
+
+**O trade-off (importante para o trabalho):** para **receber** um comando em tempo real, o ESP32
+precisa ficar **conectado e ouvindo**. Dormindo, ele só recebe comando **na janela** em que está
+acordado. Ou seja: **economia de energia × resposta imediata** — você escolhe o equilíbrio (ex.:
+acorda, publica, ouve por 5 s e dorme por 30 s).
+
+---
+
+# Parte 2 — O ponto de partida
+
+O arquivo `esp32/estacao_conexao.ino` já vem pronto e publica **tudo em um único tópico**
+`sis1a/SEU-NOME/dados`, em formato **JSON** (um jeito comum de juntar vários campos numa mensagem):
+
+```json
+{
+  "temp": 27.8,
+  "umid": 61.0,
+  "led": "OFF",
+  "wifi": { "ssid": "MinhaRede", "rssi": -55, "ip": "192.168.0.42", "ms": 820 },
+  "tls":  { "hora": "2026-09-22 18:03:11", "relogio_ok": true }
+}
+```
+
+Repare que **tudo está junto**: temperatura, umidade, estado do LED e os dois logs. Funciona — mas
+mistura assuntos. Deixar assim dificulta, por exemplo, alguém que só quer acompanhar a temperatura.
+**Organizar isso é o seu trabalho** (Parte 3).
+
+### Rodar a base
+1. Circuito: veja o [Esquemático](#esquemático).
+2. Bibliotecas (Arduino IDE): **PubSubClient**, **DHT sensor library**, **Adafruit Unified Sensor**.
+3. Copie `config.example.h` para **`config.h`** (seu Wi-Fi) e troque **`NOME`** no `.ino`.
+4. Grave, abra o Serial (115200) e veja o JSON sendo publicado a cada 10 s.
+5. Abra o [serviço no seu computador](#o-serviço-no-seu-computador) e veja o JSON chegando.
+
+---
+
+# Parte 3 — O trabalho
+
+Partindo da base, **modifique o código** para atender aos itens abaixo.
+
+### Tarefa 1 — Dividir em vários tópicos
+Em vez de um único `dados`, publique **um tópico por variável**. Comece **separando temperatura e
+umidade** em **dois tópicos**:
+```
+sis1a/SEU-NOME/temp     ->  27.8
+sis1a/SEU-NOME/umid     ->  61.0
+```
+*Por quê?* Cada assunto no seu tópico deixa tudo mais organizado e permite que cada interessado
+assine só o que precisa.
+
+### Tarefa 2 — Acrescentar o tópico do LED
+Publique o estado do LED em `sis1a/SEU-NOME/led` com **`ON`** ou **`OFF`**, toda vez que ele mudar.
+
+### Tarefa 3 — Organizar os logs
+Separe os logs em tópicos próprios, por exemplo:
+```
+sis1a/SEU-NOME/wifi     ->  SSID (ou log/wifi com todos os campos)
+sis1a/SEU-NOME/rssi     ->  -55
+sis1a/SEU-NOME/hora     ->  2026-09-22 18:03:11   (log de TLS)
+```
+
+### Tarefa 4 — Implementar Deep Sleep
+Faça o ESP32 **acordar, conectar, publicar tudo, esperar alguns segundos por um comando e dormir**.
+Como o deep sleep **reinicia** a placa, o trabalho vai para o `setup()`. Dica de estrutura:
+```cpp
+// ... conectar e publicar tudo (no setup) ...
+unsigned long t0 = millis();
+while (millis() - t0 < 5000) { mqtt.loop(); delay(10); }   // janela p/ receber comando
+esp_sleep_enable_timer_wakeup(30 * 1000000ULL);            // dorme 30 s
+esp_deep_sleep_start();
+```
+Use `RTC_DATA_ATTR int ciclos;` para **contar os despertares** e inclua esse número no log.
+Na entrega, **explique o trade-off** (energia × receber em tempo real — Parte 1, seção 7).
+
+### Tarefa 5 — Ajustar o serviço
+Garanta que o seu serviço (Python ou HTML) **leia os novos tópicos** e continue **enviando** o
+comando para o ESP32.
+
+## Extensões (o professor indica quais valem nota)
+- **Log de Wi-Fi completo** num tópico só (`log/wifi`) com SSID, RSSI, IP e tempo de conexão.
+- **Contador de boots** e **memória livre (heap)** no log — amarra com a aula de memória.
+- **Motivo do último acordar** (timer/reset) no log.
+- Serviço que **decide sozinho**: se a temperatura passar de X, publica `led:ON`.
+- Mensagem **retida** no último valor, para o painel já abrir com o estado atual.
+
+---
+
+# O serviço no seu computador
+
+Escolha **uma** forma. As duas ficam **lendo** os tópicos e deixam você **escrever** comandos.
+
+## Opção A — Python (mais direto)
+1. `pip install paho-mqtt`
+2. No `servico/servico.py`, ponha o mesmo `NOME` do ESP32.
+3. `python servico.py` — lê e imprime tudo; no `>` você digita um **número** (novo limite) ou `on`/`off`.
+
+O Python usa `subscribe()` para **ler** e `publish()` para **escrever** — é o mesmo par de operações
+do MQTT, agora do lado do computador.
+
+## Opção B — HTML no navegador (visual)
+Abra `pagina/index.html` (duplo clique). Rodando **localmente**, ele usa WebSocket comum
+(`ws://test.mosquitto.org:8080`). Digite o prefixo, **Conectar**, e use **Enviar regra** / **LED ON/OFF**.
+Se não conectar, tente a URL sem o `/mqtt` no fim.
+
+## (Opcional) Linha de comando do Mosquitto
 ```bash
-#include <Arduino.h>
-
-// Função simples para piscar um pino
-inline void blink(uint8_t pin, uint32_t timeMs) {
-  pinMode(pin, OUTPUT);
-  digitalWrite(pin, HIGH);
-  delay(timeMs);
-  digitalWrite(pin, LOW);
-  delay(timeMs);
-}
-
-// --- Monitor de memória ---
-void printMemoryInfo() {
-  size_t freeHeap = ESP.getFreeHeap();
-  size_t minHeap  = ESP.getMinFreeHeap();
-  size_t maxAlloc = ESP.getMaxAllocHeap();
-
-  size_t freeStack = uxTaskGetStackHighWaterMark(NULL);
-  freeStack *= sizeof(StackType_t);
-
-  Serial.println("=== Memória ESP32 ===");
-  Serial.printf("Heap livre atual: %u bytes\n", (unsigned)freeHeap);
-  Serial.printf("Heap mínimo já visto: %u bytes\n", (unsigned)minHeap);
-  Serial.printf("Maior bloco contíguo disponível: %u bytes\n", (unsigned)maxAlloc);
-  Serial.printf("Stack livre da task atual: %u bytes\n", (unsigned)freeStack);
-  Serial.println("======================\n");
-}
-
-void setup() {
-  Serial.begin(115200);
-  delay(500);
-  Serial.println("\n[Init] Blink + Monitor de Memória");
-}
-
-void loop() {
-  blink(2, 500); // pisca com 500 ms HIGH e 500 ms LOW
-  printMemoryInfo();       // imprime após cada ciclo
-}
-
-
-
+mosquitto_sub -h test.mosquitto.org -t "sis1a/NOME/#" -v                    # LER
+mosquitto_pub -h test.mosquitto.org -t "sis1a/NOME/comando" -m "limite:25"  # ESCREVER
 ```
 
+---
 
-## Estouro de Memória
-```bash
-#include <Arduino.h>
+# Esquemático
 
-/*
-  ESP32 — Demonstração de Stack Overflow progressivo
+**DHT11 → ESP32** · **LED → ESP32** (ou o LED embutido no GPIO 2)
 
-  Ideia:
-    - Uma task é criada com stack relativamente pequena.
-    - A cada "passo", chamamos uma função recursiva com profundidade crescente.
-    - Cada chamada usa um buffer local (FRAME_SIZE) para consumir stack.
-    - Assim, a stack vai sendo "comida" com o tempo até estourar (<= 2 min).
-
-  Ajustes:
-    - STACK_WORDS: tamanho da stack da task em PALAVRAS (1 palavra = 4 bytes).
-    - FRAME_SIZE:  bytes consumidos por frame de recursão (stack por chamada).
-    - STEP_DELAY_MS: atraso entre passos (quanto menor, mais rápido estoura).
-*/
-
-static const uint16_t STACK_WORDS   = 768;   // 768 * 4 = ~3 KB para a task
-static const uint16_t FRAME_SIZE    = 256;   // bytes por nível de recursão
-static const uint16_t STEP_DELAY_MS = 150;   // atraso entre passos (<= 2 min total)
-
-// ========== Monitor de heap/stack da task atual ==========
-static void printMemoryInfo(const char* tag = "") {
-  size_t freeHeap  = ESP.getFreeHeap();
-  size_t minHeap   = ESP.getMinFreeHeap();
-  size_t maxAlloc  = ESP.getMaxAllocHeap();
-  size_t freeStack = uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t);
-
-  Serial.println("=== Memória ESP32 ===");
-  if (tag && *tag) Serial.printf("[%s]\n", tag);
-  Serial.printf("Heap livre atual: %u bytes\n", (unsigned)freeHeap);
-  Serial.printf("Heap mínimo já visto: %u bytes\n", (unsigned)minHeap);
-  Serial.printf("Maior bloco contíguo disponível: %u bytes\n", (unsigned)maxAlloc);
-  Serial.printf("Stack livre (high-water): %u bytes\n", (unsigned)freeStack);
-  Serial.println("======================\n");
-}
-
-// ========== Função recursiva que consome stack ==========
-__attribute__((noinline)) static void eatStack(uint32_t depth) {
-  // usa FRAME_SIZE bytes na stack desta chamada
-  volatile uint8_t trash[FRAME_SIZE];
-  for (uint16_t i = 0; i < FRAME_SIZE; ++i) trash[i] = (uint8_t)i;
-
-  if (depth) eatStack(depth - 1);
-
-  // impede otimizações/tail-call
-  asm volatile("" ::: "memory");
-}
-
-// ========== Task que vai aumentar o consumo ao longo do tempo ==========
-static void SlowOverflowTask(void* pv) {
-  (void)pv;
-  Serial.println("[SlowOverflowTask] Iniciada.");
-  printMemoryInfo("inicio");
-
-  uint32_t depth = 1; // começa leve e vai aumentando
-
-  // Loop: a cada passo, aumenta 1 nível de recursão
-  // e espera um pouquinho (STEP_DELAY_MS).
-  for (;;) {
-    Serial.printf("[SlowOverflowTask] depth=%u\n", (unsigned)depth);
-    // Antes de atacar, mostra quanto de stack ainda sobrou
-    size_t freeStack = uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t);
-    Serial.printf("  stack livre ~%u bytes\n", (unsigned)freeStack);
-
-    // Tenta consumir stack proporcional à profundidade
-    // Cada nível usa ~FRAME_SIZE bytes.
-    eatStack(depth);
-
-    // Se não estourou, incrementa e tenta de novo
-    depth++;
-
-    // Ritmo do teste (ajuste para caber no seu alvo de tempo)
-    delay(STEP_DELAY_MS);
-  }
-}
-
-// ========== Hook do FreeRTOS em caso de stack overflow ==========
-extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char* pcTaskName) {
-  (void)xTask;
-  Serial.println("\n[HOOK] *** STACK OVERFLOW DETECTADO ***");
-  if (pcTaskName) Serial.printf("[HOOK] Task: %s\n", pcTaskName);
-  Serial.flush();
-  delay(200);
-  // Reinicia o chip para recuperar
-  esp_restart();
-}
-
-void setup() {
-  Serial.begin(115200);
-  while (!Serial) { delay(10); }
-  delay(300);
-  Serial.println("\n[Init] Demo: stack overflow progressivo (<= 2 min)");
-
-  // Cria a task com uma stack deliberadamente pequena
-  BaseType_t ok = xTaskCreatePinnedToCore(
-    SlowOverflowTask,          // função
-    "SlowBoom",                // nome
-    STACK_WORDS,               // stack em PALAVRAS (4 bytes cada)
-    nullptr,                   // parâmetros
-    tskIDLE_PRIORITY + 1,      // prioridade
-    nullptr,                   // handle
-    APP_CPU_NUM                // core (geralmente 1 para Arduino)
-  );
-
-  if (ok != pdPASS) {
-    Serial.println("[Init] ERRO: não foi possível criar a task.");
-  }
-}
-
-void loop() {
-  // opcional: mostrar memória da loopTask periodicamente
-  static uint32_t last = 0;
-  if (millis() - last > 2000) {
-    last = millis();
-    printMemoryInfo("loop");
-  }
-  delay(1);
-}
-
-
+| DHT11 | ESP32 |     | LED | ESP32 |
+|-------|-------|-----|-----|-------|
+| VCC   | 3V3   |     | + (perna longa) | GPIO 2 (ou GPIO 5) |
+| GND   | GND   |     | − via 220 Ω | GND |
+| DATA  | GPIO 4|     |     |     |
 
 ```
-
-## Função Deep Sleep
-```bash
-
-#include <Arduino.h>
-
-// Variável que sobrevive ao deep sleep (fica na RTC Memory)
-RTC_DATA_ATTR int bootCount = 0;
-
-// Função para imprimir motivo do último wakeup
-void printWakeupReason() {
-  esp_sleep_wakeup_cause_t reason = esp_sleep_get_wakeup_cause();
-
-  switch (reason) {
-    case ESP_SLEEP_WAKEUP_EXT0: Serial.println("Acordou por sinal externo usando RTC_IO"); break;
-    case ESP_SLEEP_WAKEUP_EXT1: Serial.println("Acordou por sinal externo usando RTC_CNTL"); break;
-    case ESP_SLEEP_WAKEUP_TIMER: Serial.println("Acordou por temporizador"); break;
-    case ESP_SLEEP_WAKEUP_TOUCHPAD: Serial.println("Acordou por touchpad"); break;
-    case ESP_SLEEP_WAKEUP_ULP: Serial.println("Acordou por ULP"); break;
-    default: Serial.printf("Motivo de wakeup não identificado: %d\n", reason); break;
-  }
-}
-
-void setup() {
-  Serial.begin(115200);
-  delay(1000); // espera Serial abrir
-
-  bootCount++;
-  Serial.printf("Boot número: %d\n", bootCount);
-  printWakeupReason();
-
-  // Configura o tempo de deep sleep (em microssegundos)
-  const uint64_t sleepTimeSec = 10;
-  Serial.printf("Entrando em deep sleep por %llu segundos...\n", sleepTimeSec);
-
-  esp_sleep_enable_timer_wakeup(sleepTimeSec * 1000000ULL);
-
-  // Dá tempo de ver a mensagem no Serial antes de dormir
-  delay(2000);
-
-  Serial.println("Indo dormir agora...");
-  Serial.flush();
-  esp_deep_sleep_start();
-}
-
-void loop() {
-  // Não será executado — ESP32 reinicia ao acordar do deep sleep
-}
-
+        ESP32
+      +--------+
+ 3V3 ─┤        ├─ GPIO4 ──────── DATA (DHT11)   VCC→3V3  GND→GND
+ GND ─┤        ├─ GPIO2 ──[220Ω]──►|── GND       (LED; ou LED embutido no GPIO2)
+      +--------+
 ```
 
-
-# Leitura BLE
-
-## src - Controla tudo
-
-```bash
-
-#include <Arduino.h>
-#include "app_ble.h"
-
-static uint32_t lastScan = 0;
-static const uint32_t SCAN_PERIOD_MS = 15000; // roda um scan a cada 15s
-
-void setup() {
-  Serial.begin(115200);
-  while (!Serial) { delay(10); }
-  delay(300);
-
-  Serial.println("\n[Init] BLE RAW Scanner (demo estourar vs limitar)");
-  initBLEScan(); // inicializa BLE e callbacks
-}
-
-void loop() {
-  // dispara um scan periódico bloqueante (termina sozinho por duração ou por limite/heap)
-  if (millis() - lastScan > SCAN_PERIOD_MS) {
-    lastScan = millis();
-    Serial.println("\n🔄 Iniciando varredura BLE...");
-    updateStoredDevices(); // coleta tudo ao redor (ou até bater o limite/heap)
-    // imprime um resumo e o RAW em hex
-    Serial.printf("📊 Dispositivos únicos: %d\n", storedPackets.size());
-    Serial.println("RAW (HEX) separados por ';':");
-    Serial.println(getRawPacketsAsHexString());
-  }
-
-  // telemetria simples de heap
-  static uint32_t lastInfo = 0;
-  if (millis() - lastInfo > 2000) {
-    lastInfo = millis();
-    size_t freeHeap   = ESP.getFreeHeap();
-    size_t minFree    = ESP.getMinFreeHeap();
-    size_t maxAlloc   = ESP.getMaxAllocHeap();
-    Serial.println("=== Memória ===");
-    Serial.printf("Heap livre: %u | Min. já visto: %u | Maior bloco: %u\n",
-                  (unsigned)freeHeap, (unsigned)minFree, (unsigned)maxAlloc);
-  }
-
-  delay(1);
-}
-
-
-```
-## app_ble.h  Controla o BLE
-
-```bash
-#ifndef APP_BLE_H
-#define APP_BLE_H
-
-#include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
-#include <vector>
-#include <set>
-#include <string>
-
-// Confg
-
-// 0 = SEM LIMITE (didático: pode exaurir heap)
-// 1 = COM LIMITE (recomendado)
-#define BLE_LIMIT_DEVICES 0
-
-// Limite de dispositivos quando BLE_LIMIT_DEVICES = 1
-#ifndef MAX_DEVICES
-#define MAX_DEVICES 200
-#endif
-
-// Duração padrão de um scan (segundos)
-static int SCAN_DURATION = 20;
-
-// Se BLE_LIMIT_DEVICES=1, para o scan ao passar desse uso de heap
-static const float HEAP_STOP_PERCENT = 80.0f;
-
-// INTERNOS 
-static BLEScan *pBLEScan = nullptr;
-
-struct RawPacket {
-  std::vector<uint8_t> data;
-  std::string mac;
-  int rssi;
-  RawPacket(const uint8_t* payload, int length, const std::string& macAddr, int rssiVal)
-  : mac(macAddr), rssi(rssiVal) {
-    data.assign(payload, payload + length);
-  }
-};
-
-static std::vector<RawPacket> storedPackets;
-static std::set<std::string>  seenMacs;
-
-// --------- util: converte vetor de bytes para HEX string (sem espaços) ---------
-static String bytesToHex(const std::vector<uint8_t>& v) {
-  String s;
-  s.reserve(v.size() * 2);
-  for (auto b : v) {
-    if (b < 0x10) s += '0';
-    s += String(b, HEX);
-  }
-  return s;
-}
-
-//  CALLBACK PRINCIPAL 
-class AllDevicesCallback : public BLEAdvertisedDeviceCallbacks {
-  void onResult(BLEAdvertisedDevice dev) override {
-    // captura TUDO (sem filtro por nome), evitando duplicar por MAC
-    std::string mac = std::string(dev.getAddress().toString().c_str());
-    if (seenMacs.count(mac)) {
-      return;
-    }
-
-    const uint8_t* payload = dev.getPayload();
-    int length = dev.getPayloadLength();
-
-    if (payload && length > 0) {
-#if BLE_LIMIT_DEVICES
-      // ---- MODO SEGURO: IF que limita ----
-      if ((int)storedPackets.size() >= MAX_DEVICES) {
-        Serial.printf("🛑 Limite MAX_DEVICES=%d atingido. Parando scan.\n", MAX_DEVICES);
-        if (pBLEScan) pBLEScan->stop();
-        return;
-      }
-#endif
-      storedPackets.emplace_back(payload, length, mac, dev.getRSSI());
-      seenMacs.insert(mac);
-
-      // log básico
-      Serial.printf("📡 %s | %d bytes | RSSI=%d | RAW=",
-                    mac.c_str(), length, dev.getRSSI());
-      for (int i = 0; i < length; ++i) {
-        if (payload[i] < 0x10) Serial.print('0');
-        Serial.print(payload[i], HEX);
-      }
-      Serial.println();
-
-#if BLE_LIMIT_DEVICES
-      // Checagem de heap (parada preventiva)
-      uint32_t totalHeap = ESP.getHeapSize();
-      uint32_t freeHeap  = ESP.getFreeHeap();
-      float usagePercent = 100.0f * (float)(totalHeap - freeHeap) / (float)totalHeap;
-      if (usagePercent > HEAP_STOP_PERCENT && pBLEScan) {
-        Serial.printf("🛑 Heap em %.2f%% (> %.1f%%). Parando scan.\n",
-                      usagePercent, HEAP_STOP_PERCENT);
-        pBLEScan->stop();
-      }
-#endif
-    }
-  }
-};
-
-static AllDevicesCallback g_cb;
-
-//  API 
-
-inline void initBLEScan() {
-  BLEDevice::init("ESP32_RAW_SCANNER");
-  pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(&g_cb);
-  pBLEScan->setActiveScan(true); // pega payload completo com resposta de scan
-
-  // Parâmetros “rápidos” de varredura (aprox. 20 ms janela/intervalo)
-  esp_ble_scan_params_t scanParams = {
-      .scan_type          = BLE_SCAN_TYPE_ACTIVE,
-      .own_addr_type      = BLE_ADDR_TYPE_PUBLIC,
-      .scan_filter_policy = BLE_SCAN_FILTER_ALLOW_ALL,
-      .scan_interval      = 0x4000, // ~20ms
-      .scan_window        = 0x4000
-  };
-  esp_ble_gap_set_scan_params(&scanParams);
-
-  // Potência alta para captar mais longe (ajuste se precisar)
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV,     ESP_PWR_LVL_P9);
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN,    ESP_PWR_LVL_P9);
-}
-
-// Limpa estruturas e faz um scan bloqueante
-inline void updateStoredDevices() {
-  if (!pBLEScan) return;
-
-  seenMacs.clear();
-  storedPackets.clear();
-
-  Serial.printf("Heap antes do scan: %u bytes\n", (unsigned)ESP.getFreeHeap());
-  pBLEScan->setAdvertisedDeviceCallbacks(&g_cb);
-  // true = bloqueante; retorna quando terminar ou quando pBLEScan->stop() for chamado
-  pBLEScan->start(SCAN_DURATION, true);
-
-  Serial.printf("Heap depois do scan: %u bytes\n", (unsigned)ESP.getFreeHeap());
-  Serial.printf("Total únicos: %u\n", (unsigned)storedPackets.size());
-
-  // relatório de uso de heap
-  uint32_t totalHeap = ESP.getHeapSize();
-  uint32_t freeHeap  = ESP.getFreeHeap();
-  uint32_t usedHeap  = totalHeap - freeHeap;
-  float usagePercent = (usedHeap / (float)totalHeap) * 100.0f;
-
-  Serial.println("=== Memória do ESP32 ===");
-  Serial.printf("Total heap: %u\n", (unsigned)totalHeap);
-  Serial.printf("Heap livre: %u\n", (unsigned)freeHeap);
-  Serial.printf("Heap usada: %u\n", (unsigned)usedHeap);
-  Serial.printf("Uso: %.2f%%\n", usagePercent);
-  Serial.println("========================");
-
-  pBLEScan->clearResults(); // limpa buffers internos do BLEScan
-}
-
-// Exporta os payloads capturados em HEX, separados por ';'
-inline String getRawPacketsAsHexString() {
-  String out;
-  for (const auto& pkt : storedPackets) {
-    out += bytesToHex(pkt.data);
-    out += ';';
-  }
-  if (out.endsWith(";")) out.remove(out.length() - 1);
-  return out;
-}
-
-#endif // APP_BLE_H
-
-
-
+```mermaid
+flowchart LR
+  ESP["ESP32 + DHT11"] -- "publica (1 topico -> depois varios)" --> B(("Mosquitto<br/>test.mosquitto.org"))
+  B -- "entrega" --> PC["Serviço no seu PC<br/>(Python ou HTML)"]
+  PC -- "publica .../comando (limite/led)" --> B
+  B -- "entrega .../comando" --> ESP
+  ESP -. "aplica a regra" .-> LED[("LED")]
 ```
 
+---
 
-##ESP32 + DeepSleep + EEPROM
-```bash
+# Entrega e avaliação
 
-#include <Arduino.h>
-#include <EEPROM.h>
+Entregue o **código do ESP32** modificado, o **serviço** usado e o **`ENTREGA.md`** com respostas e
+prints (Serial, serviço lendo os tópicos, e o comando trocando a regra).
 
-#define EEPROM_SIZE 64       // tamanho mínimo para reservar EEPROM
-#define COUNTER_ADDR 0       // posição onde vamos salvar o contador
-#define SLEEP_TIME_US 10e6   // 10 segundos em microssegundos
+## Critérios de avaliação
 
-int bootCounter = 0;
+| Critério | Peso |
+|---|---|
+| Tarefa 1 — temperatura e umidade em **tópicos separados** | 20% |
+| Tarefa 2 — **tópico do LED** (ON/OFF) publicado | 15% |
+| Tarefa 3 — **logs** de Wi-Fi e TLS organizados em tópicos | 20% |
+| Tarefa 4 — **Deep Sleep** funcionando (com contador de ciclos) | 25% |
+| Serviço lendo os novos tópicos + `ENTREGA.md` com prints e respostas | 20% |
 
-void setup() {
-  Serial.begin(115200);
-  delay(500);
+## Perguntas para o `ENTREGA.md`
 
-  // Inicializa EEPROM
-  if (!EEPROM.begin(EEPROM_SIZE)) {
-    Serial.println("Falha ao iniciar EEPROM!");
-    while (1);
-  }
+1. Explique **pub/sub**: o que é publicar, assinar e qual o papel do **broker**?
+2. Por que **separar** em vários tópicos é melhor do que mandar tudo num só? Cite uma vantagem.
+3. O que os **logs de Wi-Fi e de TLS** dizem sobre a **saúde** do dispositivo?
+4. Por que o **relógio (hora)** importa para o **TLS**?
+5. O que muda no código ao usar **Deep Sleep** (por que o trabalho vai para o `setup()`)? Para que serve o `RTC_DATA_ATTR`?
+6. Qual o **trade-off** do Deep Sleep com o **recebimento** de comandos em tempo real?
+7. Descreva o caminho de um comando: do **seu serviço** até o **LED** acender.
 
-  // Lê contador salvo
-  EEPROM.get(COUNTER_ADDR, bootCounter);
-
-  // Incrementa e salva de volta
-  bootCounter++;
-  EEPROM.put(COUNTER_ADDR, bootCounter);
-  EEPROM.commit();  // importante para gravar na flash
-
-  Serial.printf("ESP32 acordou %d vezes do deep sleep\n", bootCounter);
-
-  // Configura wakeup por timer
-  esp_sleep_enable_timer_wakeup(SLEEP_TIME_US);
-
-  Serial.println("Indo dormir por 10 segundos...");
-  delay(1000);
-
-  esp_deep_sleep_start();
-}
-
-void loop() {
-  // nunca roda, pois depois do deep sleep o ESP32 reinicia no setup()
-}
-
-
-```
-
-
-
-
-
-
-
+Bom trabalho! 🚀
