@@ -5,10 +5,6 @@
 **Prefixo MQTT (`NOME`):** `sis1a/________/`
 **Link do Worker:** `https://sua-api.SEU-USUARIO.workers.dev`
 
-> ⚠️ **Antes de enviar:** confiram que **nenhum print mostra uma chave** (API key, HMAC ou AES)
-> e que o `config.h` **não** está no repositório. Se aparecer, borrem no print **e troquem a
-> chave** (`gerar_chaves.ps1`).
-
 ---
 
 ## Evidências (prints)
