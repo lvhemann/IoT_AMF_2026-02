@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cofre IoT — espião e chaveiro</title>
+<!-- Biblioteca MQTT para o navegador (WebSocket) -->
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, Arial, sans-serif; margin: 0; background:#0f172a; color:#e2e8f0; }
+  header { background:#1e293b; padding:16px 20px; border-bottom:3px solid #2563eb; }
+  h1 { margin:0; font-size:20px; letter-spacing:1px; text-transform:uppercase; }
+  h2 { margin:0 0 4px; font-size:15px; text-transform:uppercase; letter-spacing:1px; }
+  .sub { color:#94a3b8; font-size:13px; margin:0 0 12px; }
+  .barra { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  input, button, select { font-size:14px; padding:8px 10px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:#e2e8f0; }
+  input.chave { font-family:ui-monospace,Consolas,monospace; width:100%; }
+  button { cursor:pointer; background:#2563eb; border-color:#2563eb; font-weight:600; }
+  button.cinza { background:#334155; border-color:#334155; }
+  button.perigo { background:#9a3412; border-color:#9a3412; }
+  main { padding:20px; max-width:1100px; margin:0 auto; display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width: 800px) { main { grid-template-columns:1fr; } }
+  .card { background:#1e293b; border-radius:12px; padding:16px; }
+  .card.largo { grid-column:1 / -1; }
+  .log { background:#020617; border-radius:8px; padding:10px; height:240px; overflow:auto; font-family:ui-monospace,Consolas,monospace; font-size:12px; }
+  .log div { padding:3px 0; border-bottom:1px solid #0f172a; word-break:break-all; }
+  .tag { display:inline-block; font-size:10px; font-weight:700; padding:1px 6px; border-radius:4px; margin-right:6px; }
+  .tag.aberto { background:#7f1d1d; color:#fee2e2; }
+  .tag.cifrado { background:#166534; color:#dcfce7; }
+  .tag.cmd { background:#1e3a8a; color:#dbeafe; }
+  .topico { color:#93c5fd; }
+  .vals { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:12px 0; }
+  .val { background:#0f172a; border-radius:8px; padding:10px; text-align:center; }
+  .val .rot { font-size:11px; color:#94a3b8; text-transform:uppercase; }
+  .val .num { font-size:26px; font-weight:700; }
+  .st { padding:3px 10px; border-radius:999px; font-size:12px; font-weight:700; }
+  .st.on { background:#166534; color:#dcfce7; } .st.off { background:#7f1d1d; color:#fee2e2; }
+  .ok { color:#86efac; } .erro { color:#fca5a5; }
+  label { font-size:12px; color:#94a3b8; display:block; margin:8px 0 4px; }
+  .linha { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  code { background:#0f172a; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cofre IoT — espião e chaveiro</h1>
+  <div class="barra">
+    <label style="margin:0">Seu prefixo: sis1a/ <input id="nome" value="leonam" size="10"> /</label>
+    <select id="broker">
+      <option value="wss://test.mosquitto.org:8081/mqtt">wss :8081 (TLS)</option>
+      <option value="ws://test.mosquitto.org:8080/mqtt">ws :8080 (sem TLS — como era antes)</option>
+    </select>
+    <button id="conectar">Conectar</button>
+    <span id="status" class="st off">desconectado</span>
+  </div>
+</header>
+
+<main>
+  <section class="card largo">
+    <h2>1 · O que qualquer pessoa vê</h2>
+    <p class="sub">Assinando <code>sis1a/#</code> — a turma inteira. Vermelho = dá pra ler. Verde = só ruído pra quem não tem a chave.</p>
+    <div class="log" id="espiao"></div>
+  </section>
+
+  <section class="card">
+    <h2>2 · Meu cofre (AES-GCM)</h2>
+    <p class="sub">Abre as mensagens de <code id="tCofre">sis1a/leonam/cofre</code> com a sua chave.</p>
+    <label for="chaveAes">Chave AES (32 caracteres hex — a mesma do config.h)</label>
+    <input id="chaveAes" class="chave" placeholder="00112233445566778899aabbccddeeff">
+    <div class="vals">
+      <div class="val"><div class="rot">Temp</div><div class="num" id="vTemp">--</div></div>
+      <div class="val"><div class="rot">Umid</div><div class="num" id="vUmid">--</div></div>
+      <div class="val"><div class="rot">LED</div><div class="num" id="vLed">--</div></div>
+    </div>
+    <div id="cofreSt" class="sub">aguardando mensagem...</div>
+  </section>
+
+  <section class="card">
+    <h2>3 · Comandos assinados (HMAC)</h2>
+    <p class="sub">Publica em <code id="tCmd">sis1a/leonam/comando</code> no formato <code>comando|ts|assinatura</code>.</p>
+    <label for="chaveHmac">Chave HMAC (a mesma do config.h e do Worker)</label>
+    <input id="chaveHmac" class="chave" placeholder="cole a CHAVE_HMAC">
+    <div class="linha">
+      <button data-cmd="led:ON">LED ON</button>
+      <button data-cmd="led:OFF" class="cinza">LED OFF</button>
+      <label style="margin:0"><input type="checkbox" id="assinar" checked> assinar</label>
+    </div>
+    <div class="linha">
+      <button id="replay" class="perigo">Reenviar o último (replay)</button>
+    </div>
+    <label>Respostas do ESP32 (<code id="tStatus">sis1a/leonam/status</code>)</label>
+    <div class="log" id="respostas" style="height:120px"></div>
+  </section>
+</main>
+
+<script>
+  // ================== criptografia (WebCrypto do navegador) ==================
+  const enc = new TextEncoder(), dec = new TextDecoder();
+
+  function hexParaBytes(hex) {
+    if (!/^[0-9a-fA-F]{32}$/.test(hex)) throw new Error("a chave AES precisa ter 32 caracteres hex");
+    return new Uint8Array(hex.match(/../g).map(h => parseInt(h, 16)));
+  }
+  const deBase64 = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+
+  // Abre {"iv":"...","dados":"..."} — se a chave estiver errada ou alguém mexeu
+  // em 1 bit da mensagem, o GCM recusa (a "tag" não confere).
+  async function abrirCofre(json, chaveHex) {
+    const { iv, dados } = JSON.parse(json);
+    const chave = await crypto.subtle.importKey("raw", hexParaBytes(chaveHex), "AES-GCM", false, ["decrypt"]);
+    const claro = await crypto.subtle.decrypt({ name: "AES-GCM", iv: deBase64(iv) }, chave, deBase64(dados));
+    return JSON.parse(dec.decode(claro));
+  }
+
+  // HMAC-SHA256 em hex — a mesma conta do ESP32 e do Worker
+  async function hmacHex(chave, msg) {
+    const k = await crypto.subtle.importKey("raw", enc.encode(chave), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const mac = await crypto.subtle.sign("HMAC", k, enc.encode(msg));
+    return [...new Uint8Array(mac)].map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function montarComando(cmd, chave, assinar) {
+    if (!assinar) return cmd;                         // o que qualquer um mandaria
+    const ts = Math.floor(Date.now() / 1000);
+    return `${cmd}|${ts}|${await hmacHex(chave, cmd + "|" + ts)}`;
+  }
+
+  // ================== MQTT ==================
+  let client = null, ultimoComando = null;
+  const $ = id => document.getElementById(id);
+  const base = () => "sis1a/" + $("nome").value.trim() + "/";
+
+  function escrever(alvo, html) {
+    const d = document.createElement("div");
+    d.innerHTML = `<span style="color:#64748b">${new Date().toLocaleTimeString()}</span> ` + html;
+    $(alvo).prepend(d);
+    while ($(alvo).children.length > 200) $(alvo).lastChild.remove();
+  }
+  const esc = s => s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+  function classificar(texto) {
+    try { const o = JSON.parse(texto); if (o && o.iv && o.dados) return "cifrado"; } catch (e) {}
+    return "aberto";
+  }
+
+  function atualizarTopicos() {
+    $("tCofre").textContent = base() + "cofre";
+    $("tCmd").textContent = base() + "comando";
+    $("tStatus").textContent = base() + "status";
+  }
+  $("nome").addEventListener("input", atualizarTopicos);
+
+  $("conectar").onclick = () => {
+    if (client) client.end(true);
+    const url = $("broker").value;
+    client = mqtt.connect(url, { clientId: "pagina-" + Math.random().toString(16).slice(2, 8) });
+    client.on("connect", () => {
+      $("status").textContent = "conectado"; $("status").className = "st on";
+      client.subscribe("sis1a/#");
+      escrever("espiao", `<b>conectado em ${esc(url)}</b> — ouvindo sis1a/#`);
+    });
+    client.on("close", () => { $("status").textContent = "desconectado"; $("status").className = "st off"; });
+    client.on("message", async (topico, payload) => {
+      const texto = payload.toString();
+      const tipo = topico.endsWith("/comando") ? "cmd" : classificar(texto);
+      const rotulo = { aberto: "LEGÍVEL", cifrado: "CIFRADO", cmd: "COMANDO" }[tipo];
+      escrever("espiao", `<span class="tag ${tipo}">${rotulo}</span><span class="topico">${esc(topico)}</span> ${esc(texto.slice(0, 220))}`);
+
+      if (topico === base() + "status") escrever("respostas", esc(texto));
+      if (topico === base() + "cofre") {
+        try {
+          const d = await abrirCofre(texto, $("chaveAes").value.trim());
+          $("vTemp").textContent = d.temp; $("vUmid").textContent = d.umid; $("vLed").textContent = d.led;
+          $("cofreSt").innerHTML = `<span class="ok">✔ aberto</span> — leitura de ${new Date(d.ts * 1000).toLocaleTimeString()}`;
+        } catch (e) {
+          $("cofreSt").innerHTML = `<span class="erro">✘ não abriu</span> — chave errada ou mensagem adulterada (${esc(e.message || e.name)})`;
+        }
+      }
+    });
+  };
+
+  document.querySelectorAll("[data-cmd]").forEach(b => b.onclick = async () => {
+    if (!client || !client.connected) return escrever("respostas", "conecte primeiro");
+    ultimoComando = await montarComando(b.dataset.cmd, $("chaveHmac").value, $("assinar").checked);
+    client.publish(base() + "comando", ultimoComando);
+    escrever("respostas", `→ enviado: ${esc(ultimoComando)}`);
+  });
+
+  $("replay").onclick = () => {
+    if (!client || !client.connected || !ultimoComando) return escrever("respostas", "mande um comando antes");
+    client.publish(base() + "comando", ultimoComando);
+    escrever("respostas", `→ REENVIADO (igualzinho): ${esc(ultimoComando)}`);
+  };
+
+  atualizarTopicos();
+</script>
+</body>
+</html>

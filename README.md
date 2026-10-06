@@ -1,546 +1,485 @@
-# IoT_AMF_2026-02
+# Atividade IoT — Estação Cofre (Segurança, Autenticação e Criptografia)
 
-## Monitor de Memória e Stack
+**Disciplina:** Internet das Coisas (IoT) · G0813 · Turma AMF 2026-02 · Prof. Leonam Vieira Hemann
+**Plataforma:** ESP32 (Arduino) + Cloudflare Workers + D1 + MQTT (test.mosquitto.org)
+**Formato:** individual · **Entrega:** 20/10/2026 (Passos 1 a 8) · Passo 9 entra no checkpoint do Projeto Final
 
-```bash  
-  #include <Arduino.h>
+> **Até aqui, tudo funcionava, mas nada estava trancado.** O MQTT ia em texto puro pela porta 1883,
+> a página usava `ws://` sem criptografia, o ESP32 chamava `client.setInsecure()`, o Worker gravava
+> qualquer coisa que chegasse no `/insert` e **qualquer colega podia mandar comando pro seu LED**.
+> Hoje vocês não começam um projeto novo: **trancam a estação que já existe, uma camada por vez**,
+> e a cada camada **atacam o próprio sistema** pra provar que a tranca funciona.
 
-void printMemoryInfo() {
-  // Heap (memória livre global)
-  size_t freeHeap = ESP.getFreeHeap();          // bytes livres no heap
-  size_t minHeap  = ESP.getMinFreeHeap();       // menor valor de heap já disponível
-  size_t maxAlloc = ESP.getMaxAllocHeap();      // maior bloco único alocável
+Este documento tem duas partes. A **Parte 1, Entenda** explica os conceitos (é o conteúdo da aula).
+A **Parte 2, Construa** é o passo a passo. Leia a Parte 1 antes de pôr a mão na massa.
 
-  // Stack (da task atual)
-  size_t freeStack = uxTaskGetStackHighWaterMark(NULL); // em palavras de 4 bytes
-  freeStack *= sizeof(StackType_t);                     // converte para bytes
+**Sumário**
+- [Parte 1 — Entenda](#parte-1--entenda)
+  - [1. Por que isso importa](#1-por-que-isso-importa)
+  - [2. Os quatro pilares da segurança](#2-os-quatro-pilares-da-segurança)
+  - [3. Os cinco buracos do nosso projeto](#3-os-cinco-buracos-do-nosso-projeto)
+  - [4. Criptografia em cinco ideias](#4-criptografia-em-cinco-ideias)
+  - [5. Camada 1 — TLS: o canal cifrado](#5-camada-1--tls-o-canal-cifrado)
+  - [6. Camada 2 — API key: "você tem a chave?"](#6-camada-2--api-key-você-tem-a-chave)
+  - [7. Camada 3 — Assinatura HMAC: "foi você mesmo, e ninguém mexeu?"](#7-camada-3--assinatura-hmac-foi-você-mesmo-e-ninguém-mexeu)
+  - [8. Replay: o ataque de quem não sabe a chave](#8-replay-o-ataque-de-quem-não-sabe-a-chave)
+  - [9. Camada 4 — Ponta a ponta com AES-GCM](#9-camada-4--ponta-a-ponta-com-aes-gcm)
+  - [10. Onde guardar segredo (e onde nunca guardar)](#10-onde-guardar-segredo-e-onde-nunca-guardar)
+  - [11. Resumo: ameaça × camada](#11-resumo-ameaça--camada)
+- [Parte 2 — Construa](#parte-2--construa)
+- [Arquivos da atividade](#arquivos-da-atividade)
+- [Quando der erro](#quando-der-erro)
+- [Entrega, critérios e perguntas](#entrega-critérios-e-perguntas)
 
-  Serial.println("=== Memória ESP32 ===");
-  Serial.printf("Heap livre atual: %u bytes\n", freeHeap);
-  Serial.printf("Heap mínimo já visto: %u bytes\n", minHeap);
-  Serial.printf("Maior bloco contíguo disponível: %u bytes\n", maxAlloc);
-  Serial.printf("Stack livre da task atual: %u bytes\n", freeStack);
-  Serial.println("======================\n");
-}
+---
 
-void setup() {
-  Serial.begin(115200);
-  delay(1000);
-}
+# Parte 1 — Entenda
 
-void loop() {
-  printMemoryInfo();
-  delay(2000); // imprime a cada 2 segundos
-}
+## 1. Por que isso importa
 
-```
+Dispositivo IoT é o alvo preferido de quem ataca. São bilhões de aparelhos, a maioria nunca é
+atualizada depois de instalada, e muitos ficam ligados direto na internet.
 
-## Blink com Monitor de Memória e Stack
-```bash
-#include <Arduino.h>
+- **Botnet Mirai (2016):** câmeras e roteadores domésticos com **senha de fábrica nunca trocada**
+  foram sequestrados aos milhares e usados para derrubar grandes sites nos EUA. Não teve ataque
+  sofisticado, foi só uma senha padrão.
+- **O termômetro do aquário (2017):** um cassino teve dados de clientes roubados por um
+  **sensor de temperatura de aquário** conectado à rede. O sensor era a porta mais fraca, e foi
+  por ela que entraram.
 
-// Função simples para piscar um pino
-inline void blink(uint8_t pin, uint32_t timeMs) {
-  pinMode(pin, OUTPUT);
-  digitalWrite(pin, HIGH);
-  delay(timeMs);
-  digitalWrite(pin, LOW);
-  delay(timeMs);
-}
+A lição: **o sensor mais simples é exatamente o tamanho da estação de vocês.** Se ele não for
+protegido, ele vira a porta de entrada.
 
-// --- Monitor de memória ---
-void printMemoryInfo() {
-  size_t freeHeap = ESP.getFreeHeap();
-  size_t minHeap  = ESP.getMinFreeHeap();
-  size_t maxAlloc = ESP.getMaxAllocHeap();
+## 2. Os quatro pilares da segurança
 
-  size_t freeStack = uxTaskGetStackHighWaterMark(NULL);
-  freeStack *= sizeof(StackType_t);
+Quando alguém diz "isso é seguro", tem que perguntar: **seguro contra o quê?** Os quatro pilares:
 
-  Serial.println("=== Memória ESP32 ===");
-  Serial.printf("Heap livre atual: %u bytes\n", (unsigned)freeHeap);
-  Serial.printf("Heap mínimo já visto: %u bytes\n", (unsigned)minHeap);
-  Serial.printf("Maior bloco contíguo disponível: %u bytes\n", (unsigned)maxAlloc);
-  Serial.printf("Stack livre da task atual: %u bytes\n", (unsigned)freeStack);
-  Serial.println("======================\n");
-}
+| Pilar | Pergunta | Exemplo na nossa estação |
+|---|---|---|
+| **Confidencialidade** | Quem não deveria ler, consegue ler? | Um colega lê sua temperatura no `sis1a/#` |
+| **Integridade** | Alguém pode alterar no caminho sem ninguém perceber? | `27.8` chega no banco como `45.0` |
+| **Autenticidade** | Dá pra ter certeza de quem mandou? | Alguém grava leitura falsa no seu Worker |
+| **Disponibilidade** | O sistema continua funcionando? | Alguém lota seu banco de lixo |
 
-void setup() {
-  Serial.begin(115200);
-  delay(500);
-  Serial.println("\n[Init] Blink + Monitor de Memória");
-}
+Cada técnica de hoje cobre um pedaço. **Nenhuma cobre tudo sozinha**, e é por isso que a gente
+empilha camadas.
 
-void loop() {
-  blink(2, 500); // pisca com 500 ms HIGH e 500 ms LOW
-  printMemoryInfo();       // imprime após cada ciclo
-}
+## 3. Os cinco buracos do nosso projeto
 
+Olhem o código que vocês já entregaram e procurem cada um destes:
 
+| # | Buraco | Onde está | O que um atacante faz |
+|---|---|---|---|
+| 1 | MQTT sem TLS (`1883`, `ws://...:8080`) | ESP32 e página da atividade de MQTT | Lê tudo que passa na rede (Wi-Fi da faculdade, por exemplo) |
+| 2 | `client.setInsecure()` | ESP32 (HTTPS pro Worker) | Se passa pelo servidor (*man-in-the-middle*) e lê ou altera tudo |
+| 3 | `/insert` aceita qualquer um | Worker (D1/KV) | Grava leitura falsa no seu banco com um comando de PowerShell |
+| 4 | `sis1a/<nome>/comando` aberto | ESP32 | **Liga e desliga o seu LED** (ou o relé do seu projeto) |
+| 5 | Segredos em lugar errado | `config.h` no GitHub, print do Serial | Copia sua senha e entra como se fosse você |
 
-```
+> **Teste rápido:** o buraco 4 é real **agora**. Qualquer colega que publicar `led:ON` no seu
+> tópico de comando acende o seu LED. Na Parte 2 vocês vão fazer isso com o próprio sistema antes
+> de fechar a porta.
 
+## 4. Criptografia em cinco ideias
 
-## Estouro de Memória
-```bash
-#include <Arduino.h>
-
-/*
-  ESP32 — Demonstração de Stack Overflow progressivo
-
-  Ideia:
-    - Uma task é criada com stack relativamente pequena.
-    - A cada "passo", chamamos uma função recursiva com profundidade crescente.
-    - Cada chamada usa um buffer local (FRAME_SIZE) para consumir stack.
-    - Assim, a stack vai sendo "comida" com o tempo até estourar (<= 2 min).
-
-  Ajustes:
-    - STACK_WORDS: tamanho da stack da task em PALAVRAS (1 palavra = 4 bytes).
-    - FRAME_SIZE:  bytes consumidos por frame de recursão (stack por chamada).
-    - STEP_DELAY_MS: atraso entre passos (quanto menor, mais rápido estoura).
-*/
-
-static const uint16_t STACK_WORDS   = 768;   // 768 * 4 = ~3 KB para a task
-static const uint16_t FRAME_SIZE    = 256;   // bytes por nível de recursão
-static const uint16_t STEP_DELAY_MS = 150;   // atraso entre passos (<= 2 min total)
-
-// ========== Monitor de heap/stack da task atual ==========
-static void printMemoryInfo(const char* tag = "") {
-  size_t freeHeap  = ESP.getFreeHeap();
-  size_t minHeap   = ESP.getMinFreeHeap();
-  size_t maxAlloc  = ESP.getMaxAllocHeap();
-  size_t freeStack = uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t);
-
-  Serial.println("=== Memória ESP32 ===");
-  if (tag && *tag) Serial.printf("[%s]\n", tag);
-  Serial.printf("Heap livre atual: %u bytes\n", (unsigned)freeHeap);
-  Serial.printf("Heap mínimo já visto: %u bytes\n", (unsigned)minHeap);
-  Serial.printf("Maior bloco contíguo disponível: %u bytes\n", (unsigned)maxAlloc);
-  Serial.printf("Stack livre (high-water): %u bytes\n", (unsigned)freeStack);
-  Serial.println("======================\n");
-}
-
-// ========== Função recursiva que consome stack ==========
-__attribute__((noinline)) static void eatStack(uint32_t depth) {
-  // usa FRAME_SIZE bytes na stack desta chamada
-  volatile uint8_t trash[FRAME_SIZE];
-  for (uint16_t i = 0; i < FRAME_SIZE; ++i) trash[i] = (uint8_t)i;
-
-  if (depth) eatStack(depth - 1);
-
-  // impede otimizações/tail-call
-  asm volatile("" ::: "memory");
-}
-
-// ========== Task que vai aumentar o consumo ao longo do tempo ==========
-static void SlowOverflowTask(void* pv) {
-  (void)pv;
-  Serial.println("[SlowOverflowTask] Iniciada.");
-  printMemoryInfo("inicio");
-
-  uint32_t depth = 1; // começa leve e vai aumentando
-
-  // Loop: a cada passo, aumenta 1 nível de recursão
-  // e espera um pouquinho (STEP_DELAY_MS).
-  for (;;) {
-    Serial.printf("[SlowOverflowTask] depth=%u\n", (unsigned)depth);
-    // Antes de atacar, mostra quanto de stack ainda sobrou
-    size_t freeStack = uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t);
-    Serial.printf("  stack livre ~%u bytes\n", (unsigned)freeStack);
-
-    // Tenta consumir stack proporcional à profundidade
-    // Cada nível usa ~FRAME_SIZE bytes.
-    eatStack(depth);
-
-    // Se não estourou, incrementa e tenta de novo
-    depth++;
-
-    // Ritmo do teste (ajuste para caber no seu alvo de tempo)
-    delay(STEP_DELAY_MS);
-  }
-}
-
-// ========== Hook do FreeRTOS em caso de stack overflow ==========
-extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char* pcTaskName) {
-  (void)xTask;
-  Serial.println("\n[HOOK] *** STACK OVERFLOW DETECTADO ***");
-  if (pcTaskName) Serial.printf("[HOOK] Task: %s\n", pcTaskName);
-  Serial.flush();
-  delay(200);
-  // Reinicia o chip para recuperar
-  esp_restart();
-}
-
-void setup() {
-  Serial.begin(115200);
-  while (!Serial) { delay(10); }
-  delay(300);
-  Serial.println("\n[Init] Demo: stack overflow progressivo (<= 2 min)");
-
-  // Cria a task com uma stack deliberadamente pequena
-  BaseType_t ok = xTaskCreatePinnedToCore(
-    SlowOverflowTask,          // função
-    "SlowBoom",                // nome
-    STACK_WORDS,               // stack em PALAVRAS (4 bytes cada)
-    nullptr,                   // parâmetros
-    tskIDLE_PRIORITY + 1,      // prioridade
-    nullptr,                   // handle
-    APP_CPU_NUM                // core (geralmente 1 para Arduino)
-  );
-
-  if (ok != pdPASS) {
-    Serial.println("[Init] ERRO: não foi possível criar a task.");
-  }
-}
-
-void loop() {
-  // opcional: mostrar memória da loopTask periodicamente
-  static uint32_t last = 0;
-  if (millis() - last > 2000) {
-    last = millis();
-    printMemoryInfo("loop");
-  }
-  delay(1);
-}
-
-
+**1. Hash: a impressão digital.** Transforma qualquer coisa num resumo de tamanho fixo. Não dá
+pra voltar do resumo pro original, e **mudar 1 caractere muda o resumo inteiro**:
 
 ```
-
-## Função Deep Sleep
-```bash
-
-#include <Arduino.h>
-
-// Variável que sobrevive ao deep sleep (fica na RTC Memory)
-RTC_DATA_ATTR int bootCount = 0;
-
-// Função para imprimir motivo do último wakeup
-void printWakeupReason() {
-  esp_sleep_wakeup_cause_t reason = esp_sleep_get_wakeup_cause();
-
-  switch (reason) {
-    case ESP_SLEEP_WAKEUP_EXT0: Serial.println("Acordou por sinal externo usando RTC_IO"); break;
-    case ESP_SLEEP_WAKEUP_EXT1: Serial.println("Acordou por sinal externo usando RTC_CNTL"); break;
-    case ESP_SLEEP_WAKEUP_TIMER: Serial.println("Acordou por temporizador"); break;
-    case ESP_SLEEP_WAKEUP_TOUCHPAD: Serial.println("Acordou por touchpad"); break;
-    case ESP_SLEEP_WAKEUP_ULP: Serial.println("Acordou por ULP"); break;
-    default: Serial.printf("Motivo de wakeup não identificado: %d\n", reason); break;
-  }
-}
-
-void setup() {
-  Serial.begin(115200);
-  delay(1000); // espera Serial abrir
-
-  bootCount++;
-  Serial.printf("Boot número: %d\n", bootCount);
-  printWakeupReason();
-
-  // Configura o tempo de deep sleep (em microssegundos)
-  const uint64_t sleepTimeSec = 10;
-  Serial.printf("Entrando em deep sleep por %llu segundos...\n", sleepTimeSec);
-
-  esp_sleep_enable_timer_wakeup(sleepTimeSec * 1000000ULL);
-
-  // Dá tempo de ver a mensagem no Serial antes de dormir
-  delay(2000);
-
-  Serial.println("Indo dormir agora...");
-  Serial.flush();
-  esp_deep_sleep_start();
-}
-
-void loop() {
-  // Não será executado — ESP32 reinicia ao acordar do deep sleep
-}
-
+SHA-256("27.8") = bd3837a48875e65f17d7771a484284492c4c1a757b29378b9ce28d14b4330c13
+SHA-256("27.9") = a4e9fe51e0357c83272b5407b13c67da40e1772eda503c9f704198791d21bed1
 ```
 
+É por isso que senha se guarda como hash, nunca em texto puro.
 
-# Leitura BLE
+**2. Criptografia simétrica: um cadeado, uma chave.** A **mesma chave** tranca e destranca.
+É rápida e é a que roda no ESP32 (**AES**). O problema: as duas pontas precisam ter a chave,
+e ela precisa chegar lá sem ninguém ver.
 
-## src - Controla tudo
+**3. Criptografia assimétrica: o cadeado aberto.** Um **par** de chaves. A **pública** pode ir
+pra qualquer um (como um cadeado aberto que você distribui). A **privada** só você tem (a única
+chave que abre aquele cadeado). É lenta, mas resolve o problema da ideia 2: dá pra combinar
+uma chave simétrica com alguém **sem nunca ter se encontrado**.
 
-```bash
-
-#include <Arduino.h>
-#include "app_ble.h"
-
-static uint32_t lastScan = 0;
-static const uint32_t SCAN_PERIOD_MS = 15000; // roda um scan a cada 15s
-
-void setup() {
-  Serial.begin(115200);
-  while (!Serial) { delay(10); }
-  delay(300);
-
-  Serial.println("\n[Init] BLE RAW Scanner (demo estourar vs limitar)");
-  initBLEScan(); // inicializa BLE e callbacks
-}
-
-void loop() {
-  // dispara um scan periódico bloqueante (termina sozinho por duração ou por limite/heap)
-  if (millis() - lastScan > SCAN_PERIOD_MS) {
-    lastScan = millis();
-    Serial.println("\n🔄 Iniciando varredura BLE...");
-    updateStoredDevices(); // coleta tudo ao redor (ou até bater o limite/heap)
-    // imprime um resumo e o RAW em hex
-    Serial.printf("📊 Dispositivos únicos: %d\n", storedPackets.size());
-    Serial.println("RAW (HEX) separados por ';':");
-    Serial.println(getRawPacketsAsHexString());
-  }
-
-  // telemetria simples de heap
-  static uint32_t lastInfo = 0;
-  if (millis() - lastInfo > 2000) {
-    lastInfo = millis();
-    size_t freeHeap   = ESP.getFreeHeap();
-    size_t minFree    = ESP.getMinFreeHeap();
-    size_t maxAlloc   = ESP.getMaxAllocHeap();
-    Serial.println("=== Memória ===");
-    Serial.printf("Heap livre: %u | Min. já visto: %u | Maior bloco: %u\n",
-                  (unsigned)freeHeap, (unsigned)minFree, (unsigned)maxAlloc);
-  }
-
-  delay(1);
-}
-
+**4. HMAC: hash com segredo.** É um hash que só quem tem a chave consegue calcular. Funciona
+como uma **assinatura**: se a mensagem mudar, ou se quem assinou não tiver a chave, a conta não fecha.
 
 ```
-## app_ble.h  Controla o BLE
-
-```bash
-#ifndef APP_BLE_H
-#define APP_BLE_H
-
-#include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
-#include <vector>
-#include <set>
-#include <string>
-
-// Confg
-
-// 0 = SEM LIMITE (didático: pode exaurir heap)
-// 1 = COM LIMITE (recomendado)
-#define BLE_LIMIT_DEVICES 0
-
-// Limite de dispositivos quando BLE_LIMIT_DEVICES = 1
-#ifndef MAX_DEVICES
-#define MAX_DEVICES 200
-#endif
-
-// Duração padrão de um scan (segundos)
-static int SCAN_DURATION = 20;
-
-// Se BLE_LIMIT_DEVICES=1, para o scan ao passar desse uso de heap
-static const float HEAP_STOP_PERCENT = 80.0f;
-
-// INTERNOS 
-static BLEScan *pBLEScan = nullptr;
-
-struct RawPacket {
-  std::vector<uint8_t> data;
-  std::string mac;
-  int rssi;
-  RawPacket(const uint8_t* payload, int length, const std::string& macAddr, int rssiVal)
-  : mac(macAddr), rssi(rssiVal) {
-    data.assign(payload, payload + length);
-  }
-};
-
-static std::vector<RawPacket> storedPackets;
-static std::set<std::string>  seenMacs;
-
-// --------- util: converte vetor de bytes para HEX string (sem espaços) ---------
-static String bytesToHex(const std::vector<uint8_t>& v) {
-  String s;
-  s.reserve(v.size() * 2);
-  for (auto b : v) {
-    if (b < 0x10) s += '0';
-    s += String(b, HEX);
-  }
-  return s;
-}
-
-//  CALLBACK PRINCIPAL 
-class AllDevicesCallback : public BLEAdvertisedDeviceCallbacks {
-  void onResult(BLEAdvertisedDevice dev) override {
-    // captura TUDO (sem filtro por nome), evitando duplicar por MAC
-    std::string mac = std::string(dev.getAddress().toString().c_str());
-    if (seenMacs.count(mac)) {
-      return;
-    }
-
-    const uint8_t* payload = dev.getPayload();
-    int length = dev.getPayloadLength();
-
-    if (payload && length > 0) {
-#if BLE_LIMIT_DEVICES
-      // ---- MODO SEGURO: IF que limita ----
-      if ((int)storedPackets.size() >= MAX_DEVICES) {
-        Serial.printf("🛑 Limite MAX_DEVICES=%d atingido. Parando scan.\n", MAX_DEVICES);
-        if (pBLEScan) pBLEScan->stop();
-        return;
-      }
-#endif
-      storedPackets.emplace_back(payload, length, mac, dev.getRSSI());
-      seenMacs.insert(mac);
-
-      // log básico
-      Serial.printf("📡 %s | %d bytes | RSSI=%d | RAW=",
-                    mac.c_str(), length, dev.getRSSI());
-      for (int i = 0; i < length; ++i) {
-        if (payload[i] < 0x10) Serial.print('0');
-        Serial.print(payload[i], HEX);
-      }
-      Serial.println();
-
-#if BLE_LIMIT_DEVICES
-      // Checagem de heap (parada preventiva)
-      uint32_t totalHeap = ESP.getHeapSize();
-      uint32_t freeHeap  = ESP.getFreeHeap();
-      float usagePercent = 100.0f * (float)(totalHeap - freeHeap) / (float)totalHeap;
-      if (usagePercent > HEAP_STOP_PERCENT && pBLEScan) {
-        Serial.printf("🛑 Heap em %.2f%% (> %.1f%%). Parando scan.\n",
-                      usagePercent, HEAP_STOP_PERCENT);
-        pBLEScan->stop();
-      }
-#endif
-    }
-  }
-};
-
-static AllDevicesCallback g_cb;
-
-//  API 
-
-inline void initBLEScan() {
-  BLEDevice::init("ESP32_RAW_SCANNER");
-  pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(&g_cb);
-  pBLEScan->setActiveScan(true); // pega payload completo com resposta de scan
-
-  // Parâmetros “rápidos” de varredura (aprox. 20 ms janela/intervalo)
-  esp_ble_scan_params_t scanParams = {
-      .scan_type          = BLE_SCAN_TYPE_ACTIVE,
-      .own_addr_type      = BLE_ADDR_TYPE_PUBLIC,
-      .scan_filter_policy = BLE_SCAN_FILTER_ALLOW_ALL,
-      .scan_interval      = 0x4000, // ~20ms
-      .scan_window        = 0x4000
-  };
-  esp_ble_gap_set_scan_params(&scanParams);
-
-  // Potência alta para captar mais longe (ajuste se precisar)
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV,     ESP_PWR_LVL_P9);
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN,    ESP_PWR_LVL_P9);
-}
-
-// Limpa estruturas e faz um scan bloqueante
-inline void updateStoredDevices() {
-  if (!pBLEScan) return;
-
-  seenMacs.clear();
-  storedPackets.clear();
-
-  Serial.printf("Heap antes do scan: %u bytes\n", (unsigned)ESP.getFreeHeap());
-  pBLEScan->setAdvertisedDeviceCallbacks(&g_cb);
-  // true = bloqueante; retorna quando terminar ou quando pBLEScan->stop() for chamado
-  pBLEScan->start(SCAN_DURATION, true);
-
-  Serial.printf("Heap depois do scan: %u bytes\n", (unsigned)ESP.getFreeHeap());
-  Serial.printf("Total únicos: %u\n", (unsigned)storedPackets.size());
-
-  // relatório de uso de heap
-  uint32_t totalHeap = ESP.getHeapSize();
-  uint32_t freeHeap  = ESP.getFreeHeap();
-  uint32_t usedHeap  = totalHeap - freeHeap;
-  float usagePercent = (usedHeap / (float)totalHeap) * 100.0f;
-
-  Serial.println("=== Memória do ESP32 ===");
-  Serial.printf("Total heap: %u\n", (unsigned)totalHeap);
-  Serial.printf("Heap livre: %u\n", (unsigned)freeHeap);
-  Serial.printf("Heap usada: %u\n", (unsigned)usedHeap);
-  Serial.printf("Uso: %.2f%%\n", usagePercent);
-  Serial.println("========================");
-
-  pBLEScan->clearResults(); // limpa buffers internos do BLEScan
-}
-
-// Exporta os payloads capturados em HEX, separados por ';'
-inline String getRawPacketsAsHexString() {
-  String out;
-  for (const auto& pkt : storedPackets) {
-    out += bytesToHex(pkt.data);
-    out += ';';
-  }
-  if (out.endsWith(";")) out.remove(out.length() - 1);
-  return out;
-}
-
-#endif // APP_BLE_H
-
-
-
+HMAC(chave, '{"sensor":"temp","valor":27.8}') = 7e664fe42cdb92e0b3e6...
+HMAC(chave, '{"sensor":"temp","valor":45.0}') = 95717b7dca2c03f64ccc...   ← sem a chave, impossível calcular
 ```
 
+**5. Nonce / IV: nunca repetir.** Um número que **só pode ser usado uma vez**. Cifrar a mesma
+coisa duas vezes com a mesma chave e o mesmo IV entrega pistas pro atacante. No nosso código
+o IV é sorteado a cada mensagem (`esp_random()`).
 
-##ESP32 + DeepSleep + EEPROM
-```bash
+> **Regra de ouro:** ninguém inventa criptografia. A gente usa algoritmo conhecido (AES, SHA-256)
+> por meio de biblioteca testada (no ESP32, a **mbedtls**, que já vem no core; no navegador e no
+> Worker, a **WebCrypto**).
 
-#include <Arduino.h>
-#include <EEPROM.h>
+## 5. Camada 1 — TLS: o canal cifrado
 
-#define EEPROM_SIZE 64       // tamanho mínimo para reservar EEPROM
-#define COUNTER_ADDR 0       // posição onde vamos salvar o contador
-#define SLEEP_TIME_US 10e6   // 10 segundos em microssegundos
+O **TLS** (o "S" do HTTPS, o "s" do `wss://`) junta as ideias 2 e 3:
 
-int bootCounter = 0;
-
-void setup() {
-  Serial.begin(115200);
-  delay(500);
-
-  // Inicializa EEPROM
-  if (!EEPROM.begin(EEPROM_SIZE)) {
-    Serial.println("Falha ao iniciar EEPROM!");
-    while (1);
-  }
-
-  // Lê contador salvo
-  EEPROM.get(COUNTER_ADDR, bootCounter);
-
-  // Incrementa e salva de volta
-  bootCounter++;
-  EEPROM.put(COUNTER_ADDR, bootCounter);
-  EEPROM.commit();  // importante para gravar na flash
-
-  Serial.printf("ESP32 acordou %d vezes do deep sleep\n", bootCounter);
-
-  // Configura wakeup por timer
-  esp_sleep_enable_timer_wakeup(SLEEP_TIME_US);
-
-  Serial.println("Indo dormir por 10 segundos...");
-  delay(1000);
-
-  esp_deep_sleep_start();
-}
-
-void loop() {
-  // nunca roda, pois depois do deep sleep o ESP32 reinicia no setup()
-}
-
-
+```mermaid
+sequenceDiagram
+  participant E as ESP32
+  participant S as Servidor (Worker / broker)
+  E->>S: Olá, quero falar com sua-api.workers.dev
+  S->>E: Meu certificado (assinado por uma CA)
+  Note over E: Confere: a CA é confiável?<br/>O certificado é desse domínio?<br/>Está dentro da validade?
+  E->>S: Combina uma chave de sessão (assimétrica)
+  E-->>S: Resto da conversa cifrado com AES (simétrica)
 ```
 
+O **certificado** é a carteira de identidade do servidor, e a **CA** (autoridade certificadora) é
+quem emitiu essa identidade. O ESP32 só confia se conseguir conferir a assinatura da CA, e pra
+isso ele **precisa ter o certificado da CA guardado**.
 
+```cpp
+client.setInsecure();        // o que fizemos até agora: aceita QUALQUER certificado
+client.setCACert(CA_WORKER); // o certo: só aceita certificado assinado por essa CA
+```
 
+Com `setInsecure()` o canal até é cifrado, mas **o ESP32 não sabe com quem está falando**.
+Um atacante na mesma rede se apresenta como "o servidor", e o ESP32 conversa com ele todo feliz.
 
+**O que o TLS não resolve:** ele protege o **caminho**. Quem está **nas pontas** (o broker, o
+Worker) lê tudo em claro, e o TLS não impede ninguém de **mandar** mensagem pro seu Worker.
+Pra isso servem as próximas camadas.
 
+## 6. Camada 2 — API key: "você tem a chave?"
 
+A forma mais simples de autenticar: um **segredo compartilhado**, enviado em todo pedido.
 
+```
+ESP32 → POST /insert   cabeçalho  X-API-Key: 3f9a...
+Worker → confere ANTES de tocar no banco → errado? 401 e não grava nada
+```
+
+Já corta 99% dos curiosos. Mas tem um problema sério: **a chave viaja em toda requisição**.
+Se ela vazar uma única vez (print do Serial, `config.h` no GitHub, log de algum proxy),
+**o atacante tem acesso para sempre**, até vocês trocarem a chave.
+
+## 7. Camada 3 — Assinatura HMAC: "foi você mesmo, e ninguém mexeu?"
+
+Em vez de mandar o segredo, o ESP32 manda uma **assinatura do corpo**, calculada com o segredo.
+O Worker refaz a mesma conta e compara:
+
+```mermaid
+sequenceDiagram
+  participant E as ESP32 (tem CHAVE_HMAC)
+  participant W as Worker (tem CHAVE_HMAC)
+  Note over E: corpo = {"sensor":"temp","valor":27.8,"ts":1791300000}<br/>assinatura = HMAC(CHAVE_HMAC, corpo)
+  E->>W: corpo + cabeçalho X-Assinatura
+  Note over W: refaz HMAC(CHAVE_HMAC, corpo)<br/>bateu? grava. não bateu? 401
+```
+
+O que isso ganha em relação à API key:
+- **O segredo nunca viaja.** Quem captura a requisição vê a assinatura, mas não consegue
+  assinar **outra** mensagem com ela.
+- **Integridade:** mudou `27.8` pra `45.0`? A assinatura não bate mais.
+- **Autenticidade:** só quem tem a chave consegue produzir uma assinatura válida.
+
+**Detalhe que derruba muita gente:** a assinatura vale para os **bytes exatos** do corpo.
+`{"valor":27.8}` e `{ "valor": 27.8 }` são corpos diferentes. Por isso o Worker lê o corpo com
+`request.text()` (cru) e só depois faz `JSON.parse`.
+
+## 8. Replay: o ataque de quem não sabe a chave
+
+O atacante não consegue forjar assinatura, mas consegue **gravar uma requisição válida e mandar
+de novo**, igualzinha. É assim que se abre um portão de garagem com um controle clonado:
+o atacante não sabe o código, só repete o sinal que gravou.
+
+A defesa tem duas partes, e o nosso Worker usa as duas:
+1. **Carimbo de tempo (`ts`) dentro do corpo assinado.** O Worker recusa tudo com mais de 60 s.
+   Como o `ts` está dentro da assinatura, não dá pra trocar o horário sem quebrar a assinatura.
+   (Por isso o ESP32 precisa do relógio certo, via NTP.)
+2. **Assinatura de uso único.** O Worker guarda as assinaturas aceitas na tabela
+   `assinaturas_usadas`. Se a mesma chegar de novo, é replay.
+
+## 9. Camada 4 — Ponta a ponta com AES-GCM
+
+O TLS protege o caminho até o broker, **mas o broker lê tudo**. E num broker público, como o
+`test.mosquitto.org`, **qualquer pessoa que assina `sis1a/#` também lê**. A solução é cifrar a
+**mensagem**, não só o canal. A isso se chama **criptografia de ponta a ponta**:
+
+```mermaid
+flowchart LR
+  E["ESP32<br/>cifra com AES"] -- "TLS" --> B["Broker<br/>vê só ruído"]
+  B -- "TLS" --> P["Sua página<br/>decifra com a chave"]
+  B -- "TLS" --> X["Colega curioso<br/>vê só ruído"]
+```
+
+O modo que usamos é o **AES-GCM**, que faz duas coisas de uma vez:
+- **cifra** (confidencialidade): sem a chave, `{"temp":27.8}` vira `naRa+1wPTjdx...`
+- **lacra** (integridade): junto vai uma *tag* de 16 bytes. Mexeu em **1 bit**, a tag não
+  confere e a página recusa abrir.
+
+Cada mensagem leva um **IV novo** (ideia 5), por isso a mesma temperatura nunca gera o mesmo
+texto cifrado.
+
+**O problema que sobra é a distribuição da chave.** Como a chave AES chegou na página? Hoje vocês
+vão colar à mão. Num produto de verdade, isso é resolvido com criptografia assimétrica (ideia 3)
+ou gravando uma chave única em cada dispositivo na fábrica. Guardem essa pergunta.
+
+## 10. Onde guardar segredo (e onde nunca guardar)
+
+| Lugar | Pode? |
+|---|---|
+| Cloudflare → *Variables and Secrets* → **Secret** | ✅ cifrado, ninguém lê depois de salvo |
+| `config.h` **listado no `.gitignore`** | ✅ fica só na sua máquina |
+| `config.h` commitado no GitHub | ❌ robôs varrem o GitHub atrás de chaves 24h por dia |
+| `Serial.println(API_KEY)` / print da tela com a chave | ❌ vazou |
+| A mesma chave em todos os dispositivos | ❌ vazou de um, vazou de todos |
+| Certificado de **CA** (`certificados.h`) | ✅ pode publicar: é público, não é segredo |
+
+**Vazou? Troca.** Gerar chave nova custa 10 segundos (`scripts\gerar_chaves.ps1`).
+
+## 11. Resumo: ameaça × camada
+
+| Ameaça | Camada que barra | Onde está no código |
+|---|---|---|
+| Ler a rede | 1 — TLS | `setCACert()`, porta `8885`, `wss://` |
+| Se passar pelo servidor | 1 — TLS com CA conferida | `setCACert()` em vez de `setInsecure()` |
+| Gravar dado falso | 2 — API key | `X-API-Key` / `autenticar()` no Worker |
+| Alterar dado no caminho | 3 — HMAC | `X-Assinatura` / `hmacHex()` |
+| Repetir requisição capturada | 3 — `ts` + assinatura única | tabela `assinaturas_usadas` |
+| Ler no broker / nos colegas | 4 — AES-GCM | `cifrarCofre()` / `abrirCofre()` |
+| Mandar comando no seu atuador | Bônus — comando assinado | `aoReceber()` no ESP32 |
+| Valor absurdo (mesmo autenticado) | Validação de entrada | `LIMITES` no Worker |
+
+---
+
+# Parte 2 — Construa
+
+Pra cada camada: **faz o ataque → liga a tranca → repete o ataque → print do antes e depois.**
+Os prints vão no `ENTREGA.md`.
+
+### Passo 0 — Preparar
+
+- **Como:** baixem a pasta da atividade. Vocês vão usar o **Worker e o banco D1 da atividade de D1**
+  (o mesmo `DB`) e o ESP32 com DHT11 no **GPIO 4** e LED no **GPIO 2**, como sempre.
+- No Arduino IDE, confiram que têm as bibliotecas **PubSubClient** (Nick O'Leary) e
+  **DHT sensor library** (Adafruit). A criptografia (mbedtls) **já vem no core do ESP32**.
+- **Sem placa?** Tudo funciona no **Wokwi**: Wi-Fi `Wokwi-GUEST` com senha vazia, sensor DHT22
+  (troque `DHTTYPE` para `DHT22`), e crie as abas `config.h` e `certificados.h`.
+- **PowerShell:** os scripts rodam com
+  `powershell -ExecutionPolicy Bypass -File .\nome_do_script.ps1 ...` (de dentro da pasta `scripts`).
+
+### Passo 1 — Seja o atacante (antes de trancar)
+
+- **Como (Worker):** com o Worker **antigo** ainda no ar, rodem:
+  ```powershell
+  .\ataques.ps1 -Url https://sua-api.SEU-USUARIO.workers.dev -Teste Falso
+  ```
+- **Confira:** volta `200` e aparece um **999** em `SUA-URL/list?sensor=temp`. Qualquer pessoa
+  com a URL faz isso. **Print.**
+- **Como (MQTT):** abram `pagina/cofre.html` no navegador, escolham **ws :8080 (sem TLS)**,
+  **Conectar**. Na seção 1 aparecem as estações da turma em **vermelho (LEGÍVEL)**.
+- **Confira:** vocês conseguem ler a temperatura de colegas que vocês nem sabiam o tópico.
+  **Print.**
+
+### Passo 2 — Gerar as chaves
+
+- **Como:** `.\gerar_chaves.ps1`. Ele sorteia três chaves: `API_KEY`, `CHAVE_HMAC` e
+  `CHAVE_AES_HEX`.
+- Copiem `esp32/estacao_cofre/config.example.h` para **`config.h`** e preencham com Wi-Fi,
+  `NOME`, `WORKER_URL` e as três chaves.
+- **Confira:** `git status` **não** mostra o `config.h` (o `.gitignore` já cuida). Se mostrar,
+  parem e corrijam antes de qualquer commit.
+
+### Passo 3 — Camada 2: Worker novo com API key
+
+- **Como:**
+  1. No console do D1, rodem o `worker/schema.sql` (cria `tentativas` e `assinaturas_usadas`;
+     não mexe na `leituras` que vocês já têm).
+  2. No editor do Worker, colem o `worker/worker.js` e **Deploy**.
+  3. Em **Settings → Variables and Secrets**: **Secret** `API_KEY` (valor do Passo 2) e
+     **Variable** `EXIGIR_ASSINATURA` = `nao`.
+- **Confira:**
+  ```powershell
+  .\ataques.ps1 -Url SUA-URL -ApiKey SUA_API_KEY -Teste Todos
+  ```
+  `Falso` e `SemChave` → **401**. `ComChave` → **200**. A camada 2 funciona. **Print.**
+
+### Passo 4 — Camada 1: TLS de verdade no ESP32
+
+- **Como:** gerem os certificados das CAs:
+  ```powershell
+  .\gerar_certificados.ps1 -Worker sua-api.SEU-USUARIO.workers.dev
+  ```
+  Ele cria o `esp32/estacao_cofre/certificados.h` com a CA do **seu Worker** e a CA do
+  **test.mosquitto.org**. Abram `estacao_cofre.ino` e mandem pra placa.
+- **Confira (Serial Monitor):**
+  ```
+  [NTP] sincronizando relogio... ok (1791300000)
+  [MQTT] conectando em test.mosquitto.org:8885 (TLS + login)... ok
+  [HTTPS] {"nome":"leonam","sensor":"temp","valor":24.0,"ts":1791300003} -> 200 OK: temp=24
+  ```
+  Repararam? O MQTT agora vai pela porta **8885**: TLS **e** usuário/senha. **Print.**
+- **Prova de que a validação é real:** em `setup()`, troquem temporariamente
+  `tlsMqtt.setCACert(CA_MOSQUITTO)` por `tlsMqtt.setCACert(CA_WORKER)` (a CA errada) e mandem
+  de novo. O MQTT **tem que falhar** com erro de TLS (`X509 - Certificate verification failed`).
+  Isso é o que um *man-in-the-middle* receberia. **Print do erro e voltem ao certo.**
+
+### Passo 5 — O ataque que a API key não segura
+
+- **Como:** com a camada 2 ainda ativa, rodem os testes de assinatura (agora passando a chave HMAC):
+  ```powershell
+  .\ataques.ps1 -Url SUA-URL -ApiKey SUA_API_KEY -ChaveHmac SUA_CHAVE_HMAC -Teste Todos
+  ```
+- **Confira:** `Adulterado`, `Replay` (as duas vezes) e `Atrasado` **passam com 200**. Imaginem
+  que a API key vazou num print: o atacante grava o que quiser. **Print.**
+
+### Passo 6 — Camada 3: assinatura HMAC + anti-replay
+
+- **Como:** no Worker, **Secret** `CHAVE_HMAC` (do Passo 2) e mudem `EXIGIR_ASSINATURA` para
+  `sim`. Não precisa mexer no ESP32: ele **já assina** tudo que manda (`X-Assinatura`).
+- **Confira:**
+  1. O Serial do ESP32 continua com **200**.
+  2. Rodem o **mesmo** comando do Passo 5. Agora: `Valido` → 200, `Adulterado` → **401**,
+     `Replay` → 200 e depois **401**, `Atrasado` → **401**.
+  3. A seção *Tentativas recusadas* no fim do script mostra cada ataque registrado, com motivo e IP.
+  **Print do antes (Passo 5) e depois (este passo).**
+
+### Passo 7 — Camada 4: o cofre (AES-GCM no MQTT)
+
+- **Como:** na `cofre.html`, escolham **wss :8081 (TLS)**, **Conectar**, e colem a sua
+  `CHAVE_AES_HEX` em *Meu cofre*.
+- **Confira:**
+  1. Na seção 1, o seu tópico `sis1a/<nome>/cofre` aparece em **verde (CIFRADO)**: só ruído.
+  2. Na seção 2, os valores aparecem **decifrados** (✔ aberto).
+  3. Troquem **um caractere** da chave: ✘ não abriu. Peçam pra um colega abrir o **seu** cofre
+     com a chave **dele**: também não abre. **Print dos três.**
+
+### Passo 8 — Bônus obrigatório: comandos assinados
+
+- **Como:** em *Comandos assinados*, colem a `CHAVE_HMAC` e cliquem **LED ON / LED OFF**.
+- **Confira, nesta ordem (print de cada resposta em "Respostas do ESP32"):**
+  1. Assinado → `OK: led:ON` e o LED acende.
+  2. Desmarquem **assinar** e mandem → `RECUSADO: sem assinatura`. (No Passo 1 isso funcionava!)
+  3. Marquem de novo, mandem, e cliquem **Reenviar o último (replay)** → `RECUSADO: replay`.
+  4. Peçam pra um colega mandar comando pro seu tópico com a chave **dele** →
+     `RECUSADO: assinatura invalida`.
+
+### Passo 9 — Leve pro seu Projeto Final
+
+O Projeto Final (G2) tem atuador de verdade (relé, servo, bomba) e comando remoto. Um sistema que
+**liga um relé** com comando aberto é exatamente o buraco 4. Até o checkpoint de **27/10**
+(integração com a nuvem), o projeto de vocês precisa ter **no mínimo**:
+
+1. **TLS validado** (`setCACert`) em toda conexão do ESP32, sem nenhum `setInsecure()` sobrando;
+2. **Comando remoto assinado** (o padrão `comando|ts|assinatura` do Passo 8), **ou** a rota do
+   Worker que recebe comando protegida com `autenticar()`;
+3. **Nenhum segredo no GitHub** (`config.h` no `.gitignore`).
+
+Escrevam no README do projeto, em 3 ou 4 linhas, **qual camada usaram e contra qual ameaça.**
+Isso conta na nota de integração com a nuvem do G2.
+
+---
+
+# Arquivos da atividade
+
+```
+atividade-iot-seguranca-cripto/
+├── README.md                     ← este arquivo
+├── ENTREGA.md                    ← preencher e entregar
+├── esp32/estacao_cofre/
+│   ├── estacao_cofre.ino         ← ESP32: camadas 1 a 4 + comandos assinados
+│   ├── config.example.h          ← copiar para config.h (SEGREDOS, não versionar)
+│   └── certificados.example.h    ← modelo; o script gera o certificados.h
+├── worker/
+│   ├── worker.js                 ← Worker com autenticar(), validação e /tentativas
+│   └── schema.sql                ← tabelas tentativas e assinaturas_usadas
+├── pagina/cofre.html             ← espião + cofre + comandos assinados
+└── scripts/
+    ├── gerar_chaves.ps1          ← sorteia API_KEY, CHAVE_HMAC e CHAVE_AES_HEX
+    ├── gerar_certificados.ps1    ← cria o certificados.h
+    └── ataques.ps1               ← ataca o seu Worker (Falso, Adulterado, Replay...)
+```
+
+Trechos-chave, para entender o que cada camada faz no código:
+
+**ESP32: assinando o corpo e mandando pelo HTTPS validado**
+```cpp
+WiFiClientSecure tls;
+tls.setCACert(CA_WORKER);                       // Camada 1
+String corpo = "{\"nome\":\"...\",\"sensor\":\"temp\",\"valor\":24.0,\"ts\":1791300003}";
+http.addHeader("X-API-Key", API_KEY);           // Camada 2
+http.addHeader("X-Assinatura", hmacHex(corpo)); // Camada 3
+```
+
+**Worker: a ordem das travas** (tudo antes de tocar no banco)
+```javascript
+const corpo = await request.text();               // cru: é ele que foi assinado
+const barrado = await autenticar(request, env, corpo);
+if (barrado) return barrado;                       // 401 + registra em "tentativas"
+// 1) API key  2) assinatura  3) ts ≤ 60 s  4) assinatura nunca usada
+// depois: JSON.parse + validação de faixa + INSERT com .bind()
+```
+
+**ESP32: cifrando para o cofre**
+```cpp
+mbedtls_gcm_crypt_and_tag(&gcm, MBEDTLS_GCM_ENCRYPT, n, iv, 12, NULL, 0,
+                          claro, saida, 16, saida + n);   // cifra + tag de 16 bytes
+mqtt.publish(T_COFRE.c_str(), cifrarCofre(claro).c_str()); // {"iv":"...","dados":"..."}
+```
+
+---
+
+# Quando der erro
+
+| Sintoma | Causa provável | O que fazer |
+|---|---|---|
+| `erro TLS: X509 - Certificate verification failed` no HTTPS | `certificados.h` de outro Worker, ou a Cloudflare trocou a CA | Rodar `gerar_certificados.ps1` de novo com a **sua** URL |
+| Mesmo erro, e o script mostra uma CA com nome de antivírus | O antivírus do PC "abre" o HTTPS para inspecionar | Rodar o script em outra rede/máquina, ou pegar a CA pelo navegador do celular |
+| MQTT `falhou rc=-2` com erro TLS | `CA_MOSQUITTO` errada ou incompleta | Rodar o script de novo; conferir as linhas `BEGIN`/`END` |
+| MQTT `falhou rc=4` ou `rc=5` | Usuário/senha do broker | `MQTT_USER "rw"`, `MQTT_PASS "readwrite"`, porta `8885` |
+| ESP32 recebe `401 assinatura invalida` | `CHAVE_HMAC` diferente entre `config.h` e o Secret | Colar de novo os dois (cuidado com espaço no fim) |
+| ESP32 recebe `401 expirada` | Relógio do ESP32 errado | Ver se o `[NTP] ... ok` aparece; a rede pode bloquear NTP |
+| `500 Configure o Secret ...` | Secret com nome diferente | Os nomes são exatamente `API_KEY` e `CHAVE_HMAC` |
+| Página: ✘ não abriu | Chave AES diferente da do `config.h` | Conferir os 32 caracteres |
+| `a execução de scripts foi desabilitada` | Política do PowerShell | Usar `powershell -ExecutionPolicy Bypass -File ...` |
+
+---
+
+# Entrega, critérios e perguntas
+
+Entreguem no GitHub de cada um: o **`estacao_cofre.ino`** (com as modificações que fizerem), o
+**`worker.js`** que está no ar, o **`certificados.h`** gerado e o **`ENTREGA.md`** preenchido com
+os prints e as respostas. **Sem o `config.h`.**
+
+## Critérios de avaliação
+
+| Critério | Peso |
+|---|---|
+| Camada 1: ESP32 com `setCACert()` no HTTPS e no MQTT (8885), com a prova da CA errada falhando | 20% |
+| Camadas 2 e 3: Worker recusa sem chave, adulterado, replay e atrasado (prints antes × depois) | 25% |
+| Camada 4: cofre cifrado no broker e aberto só com a chave certa | 20% |
+| Comandos assinados: aceita o assinado, recusa sem assinatura, replay e chave alheia | 15% |
+| `ENTREGA.md`: respostas + nenhum segredo no repositório | 20% |
+
+**Atenção:** `config.h` ou qualquer chave aparecendo no repositório ou nos prints **zera o item
+"nenhum segredo"**, porque é exatamente o buraco 5.
+
+## Perguntas para o `ENTREGA.md`
+
+1. No Passo 4 vocês trocaram a CA e a conexão falhou. Por que **falhar** é o comportamento
+   correto? O que aconteceria com `setInsecure()` nessa mesma situação?
+2. O TLS já cifra o caminho até o broker. Por que, mesmo assim, a temperatura aparecia legível
+   para a turma no Passo 1, e por que o AES-GCM resolve isso?
+3. Comparem **API key** e **assinatura HMAC**: o que um atacante consegue fazer se capturar
+   **uma** requisição de cada tipo?
+4. O `ts` vai **dentro** do corpo assinado. O que daria errado se ele fosse num cabeçalho
+   separado, fora da assinatura?
+5. Por que o Worker faz `request.text()` e assina o texto cru, em vez de fazer `request.json()`
+   e montar o JSON de novo pra conferir?
+6. As rotas `/list` e `/resumo` continuam abertas. Isso é problema? Para que tipo de dado
+   (pensem no Projeto Final de vocês) passaria a ser?
+7. A chave AES foi colada à mão na página. Como resolver isso num produto com mil dispositivos
+   vendidos? (Pensem na ideia 3 da Parte 1.)
+8. No seu Projeto Final, qual é o pior estrago que alguém faria sem as camadas de hoje? Qual
+   camada vocês vão levar pra lá, e por quê?
+
+Bom trabalho! 🔒
