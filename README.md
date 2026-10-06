@@ -1,6 +1,5 @@
 # Atividade IoT — Estação Cofre (Segurança, Autenticação e Criptografia)
 
-**Disciplina:** Internet das Coisas (IoT) · G0813 · Turma AMF 2026-02 · Prof. Leonam Vieira Hemann
 **Plataforma:** ESP32 (Arduino) + Cloudflare Workers + D1 + MQTT (test.mosquitto.org)
 **Formato:** individual · **Entrega:** 20/10/2026 (Passos 1 a 8) · Passo 9 entra no checkpoint do Projeto Final
 
@@ -76,7 +75,7 @@ Olhem o código que vocês já entregaram e procurem cada um destes:
 | 4 | `sis1a/<nome>/comando` aberto | ESP32 | **Liga e desliga o seu LED** (ou o relé do seu projeto) |
 | 5 | Segredos em lugar errado | `config.h` no GitHub, print do Serial | Copia sua senha e entra como se fosse você |
 
-> **Teste rápido:** o buraco 4 é real **agora**. Qualquer colega que publicar `led:ON` no seu
+> **Teste rápido:** Qualquer colega que publicar `led:ON` no seu
 > tópico de comando acende o seu LED. Na Parte 2 vocês vão fazer isso com o próprio sistema antes
 > de fechar a porta.
 
@@ -113,7 +112,7 @@ HMAC(chave, '{"sensor":"temp","valor":45.0}') = 95717b7dca2c03f64ccc...   ← se
 coisa duas vezes com a mesma chave e o mesmo IV entrega pistas pro atacante. No nosso código
 o IV é sorteado a cada mensagem (`esp_random()`).
 
-> **Regra de ouro:** ninguém inventa criptografia. A gente usa algoritmo conhecido (AES, SHA-256)
+> **Regra:** ninguém inventa criptografia. A gente usa algoritmo conhecido (AES, SHA-256)
 > por meio de biblioteca testada (no ESP32, a **mbedtls**, que já vem no core; no navegador e no
 > Worker, a **WebCrypto**).
 
@@ -157,7 +156,7 @@ ESP32 → POST /insert   cabeçalho  X-API-Key: 3f9a...
 Worker → confere ANTES de tocar no banco → errado? 401 e não grava nada
 ```
 
-Já corta 99% dos curiosos. Mas tem um problema sério: **a chave viaja em toda requisição**.
+Tem um problema sério: **a chave viaja em toda requisição**.
 Se ela vazar uma única vez (print do Serial, `config.h` no GitHub, log de algum proxy),
 **o atacante tem acesso para sempre**, até vocês trocarem a chave.
 
@@ -254,7 +253,6 @@ ou gravando uma chave única em cada dispositivo na fábrica. Guardem essa pergu
 # Parte 2 — Construa
 
 Pra cada camada: **faz o ataque → liga a tranca → repete o ataque → print do antes e depois.**
-Os prints vão no `ENTREGA.md`.
 
 ### Passo 0 — Preparar
 
